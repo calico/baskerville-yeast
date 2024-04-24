@@ -91,6 +91,7 @@ class Trainer:
         train_data,
         eval_data,
         out_dir: str,
+        log_dir: str,
         strategy=None,
         num_gpu: int = 1,
         keras_fit: bool = False,
@@ -188,7 +189,7 @@ class Trainer:
 
         callbacks = [
             early_stop,
-            tf.keras.callbacks.TensorBoard(self.out_dir),
+            tf.keras.callbacks.TensorBoard(self.log_dir),
             tf.keras.callbacks.ModelCheckpoint("%s/model_check.h5" % self.out_dir),
             save_best,
         ]

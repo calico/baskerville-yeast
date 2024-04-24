@@ -57,6 +57,12 @@ def main():
         help="Output directory [Default: %(default)s]",
     )
     parser.add_argument(
+        "-log",
+        "--log_dir",
+        default="log_out",
+        help="Log directory [Default: %(default)s]",
+    )
+    parser.add_argument(
         "--restore",
         default=None,
         help="Restore model and continue training [Default: %(default)s]",
@@ -150,7 +156,7 @@ def main():
 
         # initialize trainer
         seqnn_trainer = trainer.Trainer(
-            params_train, train_data, eval_data, args.out_dir
+            params_train, train_data, eval_data, args.out_dir, args.log_dir
         )
 
         # compile model
@@ -182,6 +188,7 @@ def main():
                 train_data,
                 eval_data,
                 args.out_dir,
+                args.log_dir,
                 strategy,
                 params_train["num_gpu"],
                 args.keras_fit,
