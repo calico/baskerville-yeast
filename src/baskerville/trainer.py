@@ -190,7 +190,7 @@ class Trainer:
 
         callbacks = [
             early_stop,
-            tf.keras.callbacks.TensorBoard(self.log_dir),
+            tf.keras.callbacks.TensorBoard(self.log_dir, histogram_freq=1),
             tf.keras.callbacks.ModelCheckpoint("%s/model_check.h5" % self.out_dir),
             save_best,
         ]
