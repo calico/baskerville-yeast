@@ -57,7 +57,7 @@ def main():
         help="Output directory [Default: %(default)s]",
     )
     parser.add_argument(
-        "-log",
+        "-l",
         "--log_dir",
         default="log_out",
         help="Log directory [Default: %(default)s]",
