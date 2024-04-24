@@ -104,6 +104,7 @@ class Trainer:
         if type(self.eval_data) is not list:
             self.eval_data = [self.eval_data]
         self.out_dir = out_dir
+        self.log_dir = log_dir
         self.strategy = strategy
         self.num_gpu = num_gpu
         self.batch_size = self.train_data[0].batch_size
