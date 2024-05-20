@@ -30,6 +30,7 @@ for device in gpu_devices:
 # TFRecord constants
 TFR_INPUT = "sequence"
 TFR_OUTPUT = "target"
+TFR_LABEL = "species"
 
 
 def file_to_records(filename: str):
@@ -61,6 +62,9 @@ class SeqDataset:
         mode: str = "eval",
         tfr_pattern: str = None,
         targets_slice_file: str = None,
+        shuffle_records: bool = False,
+        has_targets: bool = True,
+        has_label: bool = False,
     ):
         self.data_dir = data_dir
         self.split_label = split_label
@@ -69,6 +73,9 @@ class SeqDataset:
         self.seq_length_crop = seq_length_crop
         self.mode = mode
         self.tfr_pattern = tfr_pattern
+        self.shuffle_records = shuffle_records
+        self.has_targets = has_targets
+        self.has_label = has_label
 
         # read data parameters
         data_stats_file = "%s/statistics.json" % self.data_dir
@@ -79,9 +86,10 @@ class SeqDataset:
         # set defaults
         self.seq_depth = data_stats.get("seq_depth", 4)
         self.seq_1hot = data_stats.get("seq_1hot", False)
-        self.target_length = data_stats["target_length"]
-        self.num_targets = data_stats["num_targets"]
-        self.pool_width = data_stats["pool_width"]
+        self.target_length = data_stats.get("target_length", 1)
+        self.num_targets = data_stats.get("num_targets", 1)
+        self.pool_width = data_stats.get("pool_width", 1)
+        self.num_species = data_stats.get("num_species", 1)
 
         # slice targets
         if targets_slice_file is None:
@@ -118,8 +126,11 @@ class SeqDataset:
             # define features
             features = {
                 TFR_INPUT: tf.io.FixedLenFeature([], tf.string),
-                TFR_OUTPUT: tf.io.FixedLenFeature([], tf.string),
             }
+            if self.has_targets:
+                features[TFR_OUTPUT] = tf.io.FixedLenFeature([], tf.string)
+            if self.has_label:
+                features[TFR_LABEL] = tf.io.FixedLenFeature([], tf.string)
 
             # parse example into features
             parsed_features = tf.io.parse_single_example(
@@ -141,14 +152,29 @@ class SeqDataset:
                 sequence = tf.cast(sequence, tf.float32)
 
             # decode targets
-            targets = tf.io.decode_raw(parsed_features[TFR_OUTPUT], tf.float16)
-            if not raw:
-                targets = tf.reshape(targets, [self.target_length, self.num_targets])
-                targets = tf.cast(targets, tf.float32)
-                if self.targets_slice is not None:
-                    targets = targets[:, self.targets_slice]
+            if self.has_targets:
+                targets = tf.io.decode_raw(parsed_features[TFR_OUTPUT], tf.float16)
+                if not raw:
+                    targets = tf.reshape(targets, [self.target_length, self.num_targets])
+                    targets = tf.cast(targets, tf.float32)
+                    if self.targets_slice is not None:
+                        targets = targets[:, self.targets_slice]
+            
+            # decode binary label
+            if self.has_label:
+                label = tf.io.decode_raw(parsed_features[TFR_LABEL], tf.int32)
+                if not raw:
+                    label = tf.reshape(label, [1])
+                    label = tf.one_hot(label, self.num_species, dtype=tf.int32)
+                label = tf.cast(label, tf.float32)
 
-            return sequence, targets
+            ret_tuple = [sequence]
+            if self.has_targets:
+                ret_tuple.append(targets)
+            if self.has_label:
+                ret_tuple.append(label)
+            
+            return ret_tuple
 
         return parse_proto
 
@@ -157,6 +183,17 @@ class SeqDataset:
 
         # initialize dataset from TFRecords glob
         tfr_files = natsorted(glob.glob(self.tfr_path))
+    
+        # optionally shuffle tfr record files
+        if self.shuffle_records:
+            tfr_shuffle_index = np.arange(len(tfr_files), dtype='int32')
+      
+            #rng = np.random.RandomState(42)
+            #rng.shuffle(tfr_shuffle_index)
+            np.random.shuffle(tfr_shuffle_index)
+      
+            tfr_files = [tfr_files[tfr_shuffle_index[i]] for i in range(len(tfr_files))]
+        
         if tfr_files:
             dataset = tf.data.Dataset.from_tensor_slices(tfr_files)
         else:
@@ -211,20 +248,33 @@ class SeqDataset:
         if self.num_targets is not None:
             targets_nonzero = np.zeros(self.num_targets, dtype="bool")
 
-        for seq_raw, targets_raw in dataset:
+        for raw_tuple in dataset:
+            
+            seq_raw = raw_tuple[0]
+            
+            if self.has_targets:
+                targets_raw = raw_tuple[1]
+            
+            if self.has_label:
+                label_raw = raw_tuple[2]
+            
             # infer seq_depth
             seq_1hot = seq_raw.numpy().reshape((self.seq_length, -1))
 
-            # infer num_targets
-            targets1 = targets_raw.numpy().reshape(self.target_length, -1)
-            if self.num_targets is None:
-                self.num_targets = targets1.shape[-1]
-                targets_nonzero = (targets1 != 0).sum(axis=0) > 0
-            else:
-                assert self.num_targets == targets1.shape[-1]
-                targets_nonzero = np.logical_or(
-                    targets_nonzero, (targets1 != 0).sum(axis=0) > 0
-                )
+            if self.has_targets:
+                # infer num_targets
+                targets1 = targets_raw.numpy().reshape(self.target_length, -1)
+                if self.num_targets is None:
+                    self.num_targets = targets1.shape[-1]
+                    targets_nonzero = (targets1 != 0).sum(axis=0) > 0
+                else:
+                    assert self.num_targets == targets1.shape[-1]
+                    targets_nonzero = np.logical_or(
+                        targets_nonzero, (targets1 != 0).sum(axis=0) > 0
+                    )
+            elif self.num_targets is None:
+                self.num_targets = 0
+                targets_nonzero = 0
 
             # count sequences
             self.num_seqs += 1
@@ -253,6 +303,7 @@ class SeqDataset:
         self,
         return_inputs=True,
         return_outputs=True,
+        return_labels=False,
         step=1,
         target_slice=None,
         dtype="float16",
@@ -273,12 +324,22 @@ class SeqDataset:
             dataset = dataset.map(self.generate_parser(raw=True))
             dataset = dataset.batch(1)
 
-        # initialize inputs and outputs
+        # initialize inputs, outputs and label
         seqs_1hot = []
         targets = []
+        labels = []
 
         # collect inputs and outputs
-        for seq_raw, targets_raw in dataset:
+        for raw_tuple in dataset:
+            
+            seq_raw = raw_tuple[0]
+            
+            if self.has_targets:
+                targets_raw = raw_tuple[1]
+            
+            if self.has_label:
+                label_raw = raw_tuple[2]
+            
             # sequence
             if return_inputs:
                 seq_1hot = seq_raw.numpy().reshape((self.seq_length, -1))
@@ -298,17 +359,27 @@ class SeqDataset:
                     targets1 = targets1[step_i, :]
                 targets.append(targets1)
 
+            # labels
+            if return_labels:
+                label = targets_raw.numpy().astype('int32')
+                label = np.label(targets1, (1,))
+                labels.append(label)
+
         # make arrays
         seqs_1hot = np.array(seqs_1hot)
         targets = np.array(targets, dtype=dtype)
+        labels = np.array(labels, dtype='int32')
 
-        # return
-        if return_inputs and return_outputs:
-            return seqs_1hot, targets
-        elif return_inputs:
-            return seqs_1hot
-        else:
-            return targets
+        # return bundle
+        ret_tuple = []
+        if return_inputs :
+            ret_tuple.append(seqs_1hot)
+        if return_outputs :
+            ret_tuple.append(targets)
+        if return_labels :
+            ret_tuple.append(labels)
+        
+        return ret_tuple
 
 
 def make_strand_transform(targets_df, targets_strand_df):

@@ -14,6 +14,7 @@
 # =========================================================================
 import time
 import pdb
+import sys
 
 import numpy as np
 import tensorflow as tf
@@ -49,6 +50,10 @@ def parse_loss(
             loss_fn = tf.keras.losses.BinaryCrossentropy(
                 reduction=tf.keras.losses.Reduction.NONE
             )
+        elif loss_label == "mlm":
+            loss_fn = tf.keras.losses.CategoricalCrossentropy(
+                reduction=tf.keras.losses.Reduction.NONE
+            )
         elif loss_label == "poisson_mn":
             loss_fn = metrics.PoissonMultinomial(
                 total_weight, reduction=tf.keras.losses.Reduction.NONE
@@ -62,6 +67,8 @@ def parse_loss(
             loss_fn = metrics.MeanSquaredErrorUDot(spec_weight)
         elif loss_label == "bce":
             loss_fn = tf.keras.losses.BinaryCrossentropy()
+        elif loss_label == "mlm":
+            loss_fn = tf.keras.losses.CategoricalCrossentropy()
         elif loss_label == "poisson_kl":
             loss_fn = metrics.PoissonKL(spec_weight)
         elif loss_label == "poisson_mn":
@@ -107,6 +114,9 @@ class Trainer:
         self.num_gpu = num_gpu
         self.batch_size = self.train_data[0].batch_size
         self.compiled = False
+        
+        #mlm mask rate
+        self.mask_rate = self.params.get("mask_rate", 0)
 
         # early stopping
         self.patience = self.params.get("patience", 20)
@@ -116,6 +126,8 @@ class Trainer:
         self.eval_epoch_batches = [ed.batches_per_epoch() for ed in self.eval_data]
         self.train_epochs_min = self.params.get("train_epochs_min", 1)
         self.train_epochs_max = self.params.get("train_epochs_max", 10000)
+        self.steps_per_epoch_max = self.params.get("steps_per_epoch_max", None)
+        self.shuffle_records = self.params.get("shuffle_records", False)
 
         # dataset
         self.num_datasets = len(self.train_data)
@@ -142,6 +154,8 @@ class Trainer:
                     metrics.SeqAUC(curve="ROC"),
                     metrics.SeqAUC(curve="PR"),
                 ]
+            elif self.loss == "mlm":
+                model_metrics = []
             else:
                 num_targets = model.output_shape[-1]
                 model_metrics = [metrics.PearsonR(num_targets), metrics.R2(num_targets)]
@@ -155,7 +169,7 @@ class Trainer:
         if not self.compiled:
             self.compile(seqnn_model)
 
-        if self.loss == "bce":
+        if self.loss in ["bce", "mlm"]:
             early_stop = EarlyStoppingMin(
                 monitor="val_loss",
                 mode="min",
@@ -659,6 +673,242 @@ class Trainer:
                 valid_loss.reset_states()
                 valid_r.reset_states()
                 valid_r2.reset_states()
+
+    def fit_mlm(self, seqnn_model):
+        """Train the model in masked language modeling mode using a custom tf.GradientTape loop."""
+        if not self.compiled:
+            self.compile(seqnn_model)
+        model = seqnn_model.model
+
+        # metrics
+        num_features = model.output_shape[-1]
+        train_loss = tf.keras.metrics.Mean(name="train_loss")
+        valid_loss = tf.keras.metrics.Mean(name="valid_loss")
+
+        if self.strategy is None:
+
+            @tf.function
+            def train_step(x_masked, x, ind):
+                with tf.GradientTape() as tape:
+                    x_pred = model(x_masked, training=True)
+                    x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
+                    x_true = tf.gather(x, ind, axis=1, batch_dims=1)
+                    loss = self.loss_fn(x_true, x_pred) + sum(model.losses)
+                train_loss(loss)
+                gradients = tape.gradient(loss, model.trainable_variables)
+                if self.agc_clip is not None:
+                    gradients = adaptive_clip_grad(
+                        model.trainable_variables, gradients, self.agc_clip
+                    )
+                self.optimizer.apply_gradients(
+                    zip(gradients, model.trainable_variables)
+                )
+
+            @tf.function
+            def eval_step(x_masked, x, ind):
+                x_pred = model(x_masked, training=False)
+                x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
+                x_true = tf.gather(x, ind, axis=1, batch_dims=1)
+                loss = self.loss_fn(x_true, x_pred) + sum(model.losses)
+                valid_loss(loss)
+            
+            def prep_mlm(x, label, mask_size, training=False, augment_rc=True):
+                
+                # randomly revcomp the sequence(s) if in training mode
+                if training and augment_rc :
+                    do_rc = tf.cast(tf.random.uniform([x.shape[0]], minval=0, maxval=2, dtype=tf.int32), dtype=tf.bool)
+                    
+                    x = tf.where(
+                        do_rc[:, None, None],
+                        tf.reverse(x, axis=[1, 2]),
+                        x,
+                    )
+                
+                # append mask token embedding dimension
+                x_w_token = tf.concat([
+                    x,
+                    tf.zeros((x.shape[0], x.shape[1], 1)),
+                ], axis=-1)
+
+                # randomly mask part of input
+                ind = tf.tile(tf.range(x.shape[1], dtype=tf.int32)[None, :], (x.shape[0], 1))
+
+                ind = tf.map_fn(
+                    fn=lambda t_ind: tf.random.shuffle(t_ind),
+                    elems=ind,
+                    fn_output_signature=tf.int32,
+                )
+                
+                ind = ind[:, :mask_size]
+
+                mask = tf.map_fn(
+                    fn=lambda t_ind: tf.scatter_nd(t_ind[:, None], tf.ones(t_ind.shape[0], dtype=tf.float32), [x.shape[1]]),
+                    elems=ind,
+                    fn_output_signature=tf.float32,
+                )[..., None]
+
+                mask_bias = tf.concat([
+                    tf.zeros((x.shape[0], x.shape[1], 4), dtype=tf.float32),
+                    tf.ones((x.shape[0], x.shape[1], 1), dtype=tf.float32),
+                ], axis=-1)
+
+                x_masked = x_w_token * (1 - mask) + mask_bias * mask
+
+                # broadcast and concat label to input (along channels)
+                x_masked = tf.concat([
+                    x_masked,
+                    tf.tile(label, (1, x.shape[1], 1)),
+                ], axis=-1)
+                
+                return x_masked, x, ind
+
+        else:
+
+            def train_step(x_masked, x, ind):
+                with tf.GradientTape() as tape:
+                    x_pred = model(x_masked, training=True)
+                    x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
+                    x_true = tf.gather(x, ind, axis=1, batch_dims=1)
+                    loss_batch_len = self.loss_fn(x_true, x_pred)
+                    loss_batch = tf.reduce_mean(loss_batch_len, axis=-1)
+                    loss = tf.reduce_sum(loss_batch) / self.batch_size
+                    loss += sum(model.losses) / self.num_gpu
+                gradients = tape.gradient(loss, model.trainable_variables)
+                self.optimizer.apply_gradients(
+                    zip(gradients, model.trainable_variables)
+                )
+                return loss
+
+            @tf.function
+            def train_step_distr(xd_masked, xd, indd):
+                replica_losses = self.strategy.run(train_step, args=(xd_masked, xd, indd))
+                loss = self.strategy.reduce(
+                    tf.distribute.ReduceOp.SUM, replica_losses, axis=None
+                )
+                train_loss(loss)
+
+            def eval_step(x_masked, x, ind):
+                x_pred = model(x_masked, training=False)
+                x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
+                x_true = tf.gather(x, ind, axis=1, batch_dims=1)
+                loss = self.loss_fn(x_true, x_pred) + sum(model.losses)
+                valid_loss(loss)
+
+            @tf.function
+            def eval_step_distr(xd_masked, xd, indd):
+                return self.strategy.run(eval_step, args=(xd_masked, xd, indd))
+
+        # checkpoint manager
+        ckpt = tf.train.Checkpoint(model=seqnn_model.model, optimizer=self.optimizer)
+        manager = tf.train.CheckpointManager(ckpt, self.out_dir, max_to_keep=1)
+        if manager.latest_checkpoint:
+            ckpt.restore(manager.latest_checkpoint)
+            ckpt_end = 5 + manager.latest_checkpoint.find("ckpt-")
+            epoch_start = int(manager.latest_checkpoint[ckpt_end:])
+            if self.strategy is None:
+                opt_iters = self.optimizer.iterations
+            else:
+                opt_iters = self.optimizer.iterations.values[0]
+            print(
+                "Checkpoint restored at epoch %d, optimizer iteration %d."
+                % (epoch_start, opt_iters)
+            )
+        else:
+            print("No checkpoints found.")
+            epoch_start = 0
+
+        # improvement variables
+        valid_best = np.inf
+        unimproved = 0
+
+        # training loop
+        for ei in range(epoch_start, self.train_epochs_max):
+            if ei >= self.train_epochs_min and unimproved > self.patience:
+                break
+            else:
+                # train
+                t0 = time.time()
+                train_iter = iter(self.train_data[0].dataset)
+                for si in range(self.train_epoch_batches[0]):
+                    
+                    if self.steps_per_epoch_max is not None and si >= self.steps_per_epoch_max:
+                        break
+                    
+                    x, label = safe_next(train_iter)
+                    
+                    mask_size = tf.cast(self.mask_rate * x.shape[1], dtype=tf.int32)
+                    
+                    if self.strategy is not None:
+                        x_masked, x, ind = prep_mlm_distr(x, label, mask_size, training=True)
+                        train_step_distr(x_masked, x, ind)
+                    else:
+                        x_masked, x, ind = prep_mlm(x, label, mask_size, training=True)
+                        train_step(x_masked, x, ind)
+                    
+                    if ei == epoch_start and si == 0:
+                        print("Successful first step!", flush=True)
+
+                # evaluate
+                for x, label in self.eval_data[0].dataset:
+                    
+                    mask_size = tf.cast(self.mask_rate * x.shape[1], dtype=tf.int32)
+                    
+                    if self.strategy is not None:
+                        x_masked, x, ind = prep_mlm_distr(x, label, mask_size, training=False)
+                        eval_step_distr(x_masked, x, ind)
+                    else:
+                        x_masked, x, ind = prep_mlm(x, label, mask_size, training=False)
+                        eval_step(x_masked, x, ind)
+
+                n_train_actual = self.train_epoch_batches[0]
+                if self.steps_per_epoch_max is not None and self.train_epoch_batches[0] > self.steps_per_epoch_max:
+                    n_train_actual = self.steps_per_epoch_max
+                
+                n_eval_actual = self.eval_epoch_batches[0]
+                
+                # print training accuracy
+                train_loss_epoch = train_loss.result().numpy()
+                print(
+                    "Epoch %d - %ds - train_loss: %.4f - steps: %d"
+                    % (
+                        ei,
+                        (time.time() - t0),
+                        train_loss_epoch,
+                        n_train_actual,
+                    ),
+                    end="",
+                )
+
+                # print validation accuracy
+                valid_loss_epoch = valid_loss.result().numpy()
+                print(
+                    " - valid_loss: %.4f - steps: %d"
+                    % (valid_loss_epoch, n_eval_actual),
+                    end="",
+                )
+
+                # checkpoint
+                manager.save()
+                seqnn_model.save("%s/model_check.h5" % self.out_dir)
+
+                # check best
+                valid_best_epoch = valid_loss_epoch
+                if valid_best_epoch < valid_best:
+                    print(" - best!", end="")
+                    unimproved = 0
+                    valid_best = valid_best_epoch
+                    seqnn_model.save("%s/model_best.h5" % self.out_dir)
+                else:
+                    unimproved += 1
+                print("", flush=True)
+
+                # reset metrics
+                train_loss.reset_states()
+                valid_loss.reset_states()
+                
+                # re-init train data if reshuffling records
+                if self.shuffle_records :
+                    self.train_data[0].make_dataset()
 
     def make_optimizer(self):
         """Make optimizer object from given parameters."""

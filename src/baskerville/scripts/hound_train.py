@@ -97,6 +97,12 @@ def main():
         params = json.load(params_open)
     params_model = params["model"]
     params_train = params["train"]
+    
+    # read data parameters (data 0)
+    data_stats_file = "%s/statistics.json" % args.data_dirs[0]
+    with open(data_stats_file) as data_stats_open:
+        data_stats = json.load(data_stats_open)
+    num_species = data_stats.get("num_species", 1)
 
     # read datasets
     train_data = []
@@ -118,6 +124,9 @@ def main():
                 shuffle_buffer=params_train.get("shuffle_buffer", 128),
                 mode="train",
                 tfr_pattern=args.tfr_train,
+                shuffle_records=params_train.get("shuffle_records", False),
+                has_targets=params_train.get("has_targets", True),
+                has_label=params_train.get("has_label", False),
             )
         )
 
@@ -129,10 +138,16 @@ def main():
                 batch_size=params_train["batch_size"],
                 mode="eval",
                 tfr_pattern=args.tfr_eval,
+                has_targets=params_train.get("has_targets", True),
+                has_label=params_train.get("has_label", False),
             )
         )
 
     params_model["strand_pair"] = strand_pairs
+    
+    params_model["num_features"] = 4
+    if params_train["loss"] == 'mlm':
+        params_model["num_features"] = num_species + 5
 
     if args.mixed_precision:
         mixed_precision.set_global_policy("mixed_float16")
@@ -195,7 +210,10 @@ def main():
         seqnn_trainer.fit_keras(seqnn_model)
     else:
         if len(args.data_dirs) == 1:
-            seqnn_trainer.fit_tape(seqnn_model)
+            if params_train["loss"] == 'mlm':
+                seqnn_trainer.fit_mlm(seqnn_model)
+            else:
+                seqnn_trainer.fit_tape(seqnn_model)
         else:
             seqnn_trainer.fit2(seqnn_model)
 
