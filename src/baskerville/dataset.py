@@ -31,6 +31,7 @@ for device in gpu_devices:
 TFR_INPUT = "sequence"
 TFR_OUTPUT = "target"
 TFR_LABEL = "species"
+TFR_MASK = "mask"
 
 
 def file_to_records(filename: str):
@@ -65,6 +66,7 @@ class SeqDataset:
         shuffle_records: bool = False,
         has_targets: bool = True,
         has_label: bool = False,
+        has_mask: bool = False,
     ):
         self.data_dir = data_dir
         self.split_label = split_label
@@ -76,6 +78,7 @@ class SeqDataset:
         self.shuffle_records = shuffle_records
         self.has_targets = has_targets
         self.has_label = has_label
+        self.has_mask = has_mask
 
         # read data parameters
         data_stats_file = "%s/statistics.json" % self.data_dir
@@ -131,6 +134,8 @@ class SeqDataset:
                 features[TFR_OUTPUT] = tf.io.FixedLenFeature([], tf.string)
             if self.has_label:
                 features[TFR_LABEL] = tf.io.FixedLenFeature([], tf.string)
+            if self.has_mask:
+                features[TFR_MASK] = tf.io.FixedLenFeature([], tf.string)
 
             # parse example into features
             parsed_features = tf.io.parse_single_example(
@@ -167,12 +172,21 @@ class SeqDataset:
                     label = tf.reshape(label, [1])
                     label = tf.one_hot(label, self.num_species, dtype=tf.int32)
                 label = tf.cast(label, tf.float32)
+            
+            # decode binary mask
+            if self.has_mask:
+                mask = tf.io.decode_raw(parsed_features[TFR_MASK], tf.uint8)
+                if not raw:
+                    mask = tf.reshape(mask, [self.seq_length])
+                mask = tf.cast(mask, tf.float32)
 
             ret_tuple = [sequence]
             if self.has_targets:
                 ret_tuple.append(targets)
             if self.has_label:
                 ret_tuple.append(label)
+            if self.has_mask:
+                ret_tuple.append(mask)
             
             return ret_tuple
 
@@ -304,6 +318,7 @@ class SeqDataset:
         return_inputs=True,
         return_outputs=True,
         return_labels=False,
+        return_masks=False,
         step=1,
         target_slice=None,
         dtype="float16",
@@ -328,17 +343,35 @@ class SeqDataset:
         seqs_1hot = []
         targets = []
         labels = []
+        masks = []
 
         # collect inputs and outputs
         for raw_tuple in dataset:
             
             seq_raw = raw_tuple[0]
             
-            if self.has_targets:
+            targets_raw, label_raw, mask_raw = None, None, None
+            
+            if self.has_targets :
                 targets_raw = raw_tuple[1]
             
-            if self.has_label:
-                label_raw = raw_tuple[2]
+                if self.has_label :
+                    label_raw = raw_tuple[2]
+            
+                    if self.has_mask:
+                        mask_raw = raw_tuple[3]
+                else :
+                    if self.has_mask:
+                        mask_raw = raw_tuple[2]
+            else :
+                if self.has_label :
+                    label_raw = raw_tuple[1]
+            
+                    if self.has_mask:
+                        mask_raw = raw_tuple[2]
+                else :
+                    if self.has_mask:
+                        mask_raw = raw_tuple[1]
             
             # sequence
             if return_inputs:
@@ -361,14 +394,23 @@ class SeqDataset:
 
             # labels
             if return_labels:
-                label = targets_raw.numpy().astype('int32')
-                label = np.label(targets1, (1,))
+                label = label_raw.numpy().astype('int32')
+                label = np.reshape(label, (1,))
                 labels.append(label)
+            
+            # mask
+            if return_masks:
+                mask = mask_raw.numpy().reshape((self.seq_length,))
+                if self.seq_length_crop > 0:
+                    crop_len = (self.seq_length - self.seq_length_crop) // 2
+                    mask = mask[crop_len:-crop_len]
+                masks.append(mask)
 
         # make arrays
         seqs_1hot = np.array(seqs_1hot)
         targets = np.array(targets, dtype=dtype)
         labels = np.array(labels, dtype='int32')
+        masks = np.array(masks)
 
         # return bundle
         ret_tuple = []
@@ -378,6 +420,8 @@ class SeqDataset:
             ret_tuple.append(targets)
         if return_labels :
             ret_tuple.append(labels)
+        if return_masks :
+            ret_tuple.append(masks)
         
         return ret_tuple
 

@@ -117,6 +117,11 @@ class Trainer:
         
         #mlm mask rate
         self.mask_rate = self.params.get("mask_rate", 0)
+        
+        #other mlm arguments
+        self.exon_loss_scale = self.params.get("exon_loss_scale", None)
+        self.exon_mut_rate = self.params.get("exon_mut_rate", None)
+        self.repeat_eval = self.params.get("repeat_eval", 1)
 
         # early stopping
         self.patience = self.params.get("patience", 20)
@@ -688,13 +693,18 @@ class Trainer:
         if self.strategy is None:
 
             @tf.function
-            def train_step(x_masked, x, ind):
+            def train_step(x_masked, x, ind, sample_weight=None):
                 with tf.GradientTape() as tape:
                     x_pred = model(x_masked, training=True)
                     x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
                     x_true = tf.gather(x, ind, axis=1, batch_dims=1)
-                    loss = self.loss_fn(x_true, x_pred) + sum(model.losses)
+                    if sample_weight is not None:
+                        sample_weight = tf.gather(sample_weight, ind, axis=1, batch_dims=1)
+                    
+                    loss = self.loss_fn(x_true, x_pred, sample_weight=sample_weight) + sum(model.losses)
+                
                 train_loss(loss)
+                
                 gradients = tape.gradient(loss, model.trainable_variables)
                 if self.agc_clip is not None:
                     gradients = adaptive_clip_grad(
@@ -705,14 +715,19 @@ class Trainer:
                 )
 
             @tf.function
-            def eval_step(x_masked, x, ind):
+            def eval_step(x_masked, x, ind, sample_weight=None):
                 x_pred = model(x_masked, training=False)
                 x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
                 x_true = tf.gather(x, ind, axis=1, batch_dims=1)
-                loss = self.loss_fn(x_true, x_pred) + sum(model.losses)
-                valid_loss(loss)
+                if sample_weight is not None:
+                    sample_weight = tf.gather(sample_weight, ind, axis=1, batch_dims=1)
+                
+                loss = self.loss_fn(x_true, x_pred, sample_weight=sample_weight) + sum(model.losses)
+                
+                #valid_loss(loss)
+                return loss
             
-            def prep_mlm(x, label, mask_size, training=False, augment_rc=True):
+            def prep_mlm(x, label, mask_size, exon_mask=None, training=False, augment_rc=True):
                 
                 # randomly revcomp the sequence(s) if in training mode
                 if training and augment_rc :
@@ -723,14 +738,23 @@ class Trainer:
                         tf.reverse(x, axis=[1, 2]),
                         x,
                     )
+                    
+                    if exon_mask is not None :
+                        exon_mask = tf.where(
+                            do_rc[:, None],
+                            tf.reverse(exon_mask, axis=[1]),
+                            exon_mask,
+                        )
                 
-                # append mask token embedding dimension
-                x_w_token = tf.concat([
-                    x,
-                    tf.zeros((x.shape[0], x.shape[1], 1)),
-                ], axis=-1)
-
-                # randomly mask part of input
+                # optionally set position-specific loss weight scales from binary mask
+                sw = None
+                
+                if exon_mask is not None :
+                    non_exon_loss_scale = 1. + (1. - self.exon_loss_scale) * tf.math.minimum(tf.reduce_sum(exon_mask, axis=1) / (exon_mask.shape[1] - tf.reduce_sum(exon_mask, axis=1)), 16.)
+                    
+                    sw = exon_mask * self.exon_loss_scale + (1. - exon_mask) * non_exon_loss_scale[:, None]
+                
+                # get indices for random input mask
                 ind = tf.tile(tf.range(x.shape[1], dtype=tf.int32)[None, :], (x.shape[0], 1))
 
                 ind = tf.map_fn(
@@ -741,17 +765,62 @@ class Trainer:
                 
                 ind = ind[:, :mask_size]
 
+                # construct binary mask
                 mask = tf.map_fn(
                     fn=lambda t_ind: tf.scatter_nd(t_ind[:, None], tf.ones(t_ind.shape[0], dtype=tf.float32), [x.shape[1]]),
                     elems=ind,
                     fn_output_signature=tf.float32,
                 )[..., None]
+                
+                # optionally and randomly mutate part of the coding regions
+                if exon_mask is not None and self.exon_mut_rate is not None :
+                    
+                    mut_size = tf.cast(self.exon_mut_rate * x.shape[1], dtype=tf.int32)
+                    
+                    mut_ind = tf.tile(tf.range(x.shape[1], dtype=tf.int32)[None, :], (x.shape[0], 1))
 
+                    # sample positions
+                    mut_ind = tf.map_fn(
+                        fn=lambda t_ind: tf.random.shuffle(t_ind),
+                        elems=mut_ind,
+                        fn_output_signature=tf.int32,
+                    )
+
+                    mut_ind = mut_ind[:, :mut_size]
+                    
+                    mut_mask = tf.map_fn(
+                        fn=lambda t_mut_ind: tf.scatter_nd(t_mut_ind[:, None], tf.ones(t_mut_ind.shape[0], dtype=tf.float32), [x.shape[1]]),
+                        elems=mut_ind,
+                        fn_output_signature=tf.float32,
+                    )[..., None]
+                    
+                    # sample and inflate mutated nucleotide identities at positions
+                    x_mut = tf.map_fn(
+                        fn=lambda t_mut_ind: tf.cast(tf.one_hot(tf.scatter_nd(
+                            t_mut_ind[:, None],
+                            1 + tf.random.uniform([t_mut_ind.shape[0]], minval=0, maxval=4, dtype=tf.int32),
+                            [x.shape[1]]
+                        ), 5, dtype=tf.int32)[:, 1:], dtype=tf.float32),
+                        elems=mut_ind,
+                        fn_output_signature=tf.float32,
+                    )
+                    
+                    # apply mutations
+                    x = x * (1 - mut_mask * exon_mask[..., None] * (1 - mask)) + x_mut * mut_mask * exon_mask[..., None] * (1 - mask)
+                
+                # append mask token embedding dimension
+                x_w_token = tf.concat([
+                    x,
+                    tf.zeros((x.shape[0], x.shape[1], 1)),
+                ], axis=-1)
+
+                # template for a fully-masked input pattern
                 mask_bias = tf.concat([
                     tf.zeros((x.shape[0], x.shape[1], 4), dtype=tf.float32),
                     tf.ones((x.shape[0], x.shape[1], 1), dtype=tf.float32),
                 ], axis=-1)
 
+                # apply mask
                 x_masked = x_w_token * (1 - mask) + mask_bias * mask
 
                 # broadcast and concat label to input (along channels)
@@ -760,43 +829,8 @@ class Trainer:
                     tf.tile(label, (1, x.shape[1], 1)),
                 ], axis=-1)
                 
-                return x_masked, x, ind
-
-        else:
-
-            def train_step(x_masked, x, ind):
-                with tf.GradientTape() as tape:
-                    x_pred = model(x_masked, training=True)
-                    x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
-                    x_true = tf.gather(x, ind, axis=1, batch_dims=1)
-                    loss_batch_len = self.loss_fn(x_true, x_pred)
-                    loss_batch = tf.reduce_mean(loss_batch_len, axis=-1)
-                    loss = tf.reduce_sum(loss_batch) / self.batch_size
-                    loss += sum(model.losses) / self.num_gpu
-                gradients = tape.gradient(loss, model.trainable_variables)
-                self.optimizer.apply_gradients(
-                    zip(gradients, model.trainable_variables)
-                )
-                return loss
-
-            @tf.function
-            def train_step_distr(xd_masked, xd, indd):
-                replica_losses = self.strategy.run(train_step, args=(xd_masked, xd, indd))
-                loss = self.strategy.reduce(
-                    tf.distribute.ReduceOp.SUM, replica_losses, axis=None
-                )
-                train_loss(loss)
-
-            def eval_step(x_masked, x, ind):
-                x_pred = model(x_masked, training=False)
-                x_pred = tf.gather(x_pred, ind, axis=1, batch_dims=1)
-                x_true = tf.gather(x, ind, axis=1, batch_dims=1)
-                loss = self.loss_fn(x_true, x_pred) + sum(model.losses)
-                valid_loss(loss)
-
-            @tf.function
-            def eval_step_distr(xd_masked, xd, indd):
-                return self.strategy.run(eval_step, args=(xd_masked, xd, indd))
+                return x_masked, x, ind, sw
+        
 
         # checkpoint manager
         ckpt = tf.train.Checkpoint(model=seqnn_model.model, optimizer=self.optimizer)
@@ -834,31 +868,45 @@ class Trainer:
                     if self.steps_per_epoch_max is not None and si >= self.steps_per_epoch_max:
                         break
                     
-                    x, label = safe_next(train_iter)
+                    x, label, exon_mask = None, None, None
+                    if self.train_data[0].has_mask :
+                        x, label, exon_mask = safe_next(train_iter)
+                    else :
+                        x, label = safe_next(train_iter)
                     
                     mask_size = tf.cast(self.mask_rate * x.shape[1], dtype=tf.int32)
                     
-                    if self.strategy is not None:
-                        x_masked, x, ind = prep_mlm_distr(x, label, mask_size, training=True)
-                        train_step_distr(x_masked, x, ind)
-                    else:
-                        x_masked, x, ind = prep_mlm(x, label, mask_size, training=True)
-                        train_step(x_masked, x, ind)
+                    if self.strategy is None:
+                        x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=True)
+                        train_step(x_masked, x, ind, sample_weight=sw)
                     
                     if ei == epoch_start and si == 0:
                         print("Successful first step!", flush=True)
 
                 # evaluate
-                for x, label in self.eval_data[0].dataset:
+                for x_tuple in self.eval_data[0].dataset:
+                    
+                    x, label, exon_mask = None, None, None
+                    if self.eval_data[0].has_mask :
+                        x, label, exon_mask = x_tuple
+                    else :
+                        x, label = x_tuple
                     
                     mask_size = tf.cast(self.mask_rate * x.shape[1], dtype=tf.int32)
                     
-                    if self.strategy is not None:
-                        x_masked, x, ind = prep_mlm_distr(x, label, mask_size, training=False)
-                        eval_step_distr(x_masked, x, ind)
-                    else:
-                        x_masked, x, ind = prep_mlm(x, label, mask_size, training=False)
-                        eval_step(x_masked, x, ind)
+                    if self.strategy is None:
+                        #x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=False)
+                        #eval_step(x_masked, x, ind, sample_weight=sw)
+                        
+                        eval_loss_repeats = []
+                        for _ in range(self.repeat_eval) :
+                            
+                            x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=False)
+                            eval_loss_repeats.append(eval_step(x_masked, x, ind, sample_weight=sw)[..., None])
+                        
+                        eval_loss = tf.reduce_mean(tf.concat(eval_loss_repeats, axis=-1), axis=-1)
+                        
+                        valid_loss(eval_loss)
 
                 n_train_actual = self.train_epoch_batches[0]
                 if self.steps_per_epoch_max is not None and self.train_epoch_batches[0] > self.steps_per_epoch_max:

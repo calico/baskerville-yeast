@@ -127,6 +127,7 @@ def main():
                 shuffle_records=params_train.get("shuffle_records", False),
                 has_targets=params_train.get("has_targets", True),
                 has_label=params_train.get("has_label", False),
+                has_mask=params_train.get("has_mask", False),
             )
         )
 
@@ -140,6 +141,7 @@ def main():
                 tfr_pattern=args.tfr_eval,
                 has_targets=params_train.get("has_targets", True),
                 has_label=params_train.get("has_label", False),
+                has_mask=params_train.get("has_mask", False),
             )
         )
 
