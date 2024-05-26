@@ -120,6 +120,7 @@ class Trainer:
         
         #other mlm arguments
         self.exon_loss_scale = self.params.get("exon_loss_scale", None)
+        self.non_exon_loss_scale = self.params.get("non_exon_loss_scale", None)
         self.exon_mut_rate = self.params.get("exon_mut_rate", None)
         self.repeat_eval = self.params.get("repeat_eval", 1)
 
@@ -749,10 +750,11 @@ class Trainer:
                 # optionally set position-specific loss weight scales from binary mask
                 sw = None
                 
-                if exon_mask is not None :
-                    non_exon_loss_scale = 1. + (1. - self.exon_loss_scale) * tf.math.minimum(tf.reduce_sum(exon_mask, axis=1) / (exon_mask.shape[1] - tf.reduce_sum(exon_mask, axis=1)), 16.)
+                if exon_mask is not None and self.exon_loss_scale is not None :
+                    #non_exon_loss_scale = 1. + (1. - self.exon_loss_scale) * tf.math.minimum(tf.reduce_sum(exon_mask, axis=1) / (exon_mask.shape[1] - tf.reduce_sum(exon_mask, axis=1)), 16.)
                     
-                    sw = exon_mask * self.exon_loss_scale + (1. - exon_mask) * non_exon_loss_scale[:, None]
+                    #sw = exon_mask * self.exon_loss_scale + (1 - exon_mask) * non_exon_loss_scale[:, None]
+                    sw = exon_mask * self.exon_loss_scale + (1 - exon_mask) * self.non_exon_loss_scale
                 
                 # get indices for random input mask
                 ind = tf.tile(tf.range(x.shape[1], dtype=tf.int32)[None, :], (x.shape[0], 1))
