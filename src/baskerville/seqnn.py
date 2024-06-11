@@ -1000,12 +1000,15 @@ class SeqNN:
 
         return preds
 
-    def restore(self, model_file, head_i=0, trunk=False):
+    def restore(self, model_file, head_i=0, trunk=False, by_name=False):
         """Restore weights from saved model."""
         if trunk:
             self.model_trunk.load_weights(model_file)
         else:
-            self.models[head_i].load_weights(model_file)
+            if by_name :
+                self.models[head_i].load_weights(model_file, by_name=True, skip_mismatch=True)
+            else :
+                self.models[head_i].load_weights(model_file)
             self.model = self.models[head_i]
 
     def save(self, model_file, trunk=False):
