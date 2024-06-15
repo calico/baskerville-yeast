@@ -32,7 +32,7 @@ TFR_INPUT = "sequence"
 TFR_OUTPUT = "target"
 TFR_LABEL = "species"
 TFR_MASK = "mask"
-
+TFR_REPEAT_MASK = "repeat_mask"
 
 def file_to_records(filename: str):
     """Read TFRecord file into tf.data.Dataset."""
@@ -67,6 +67,7 @@ class SeqDataset:
         has_targets: bool = True,
         has_label: bool = False,
         has_mask: bool = False,
+        has_repeat_mask: bool = False,
     ):
         self.data_dir = data_dir
         self.split_label = split_label
@@ -79,6 +80,7 @@ class SeqDataset:
         self.has_targets = has_targets
         self.has_label = has_label
         self.has_mask = has_mask
+        self.has_repeat_mask = has_repeat_mask
 
         # read data parameters
         data_stats_file = "%s/statistics.json" % self.data_dir
@@ -136,6 +138,8 @@ class SeqDataset:
                 features[TFR_LABEL] = tf.io.FixedLenFeature([], tf.string)
             if self.has_mask:
                 features[TFR_MASK] = tf.io.FixedLenFeature([], tf.string)
+            if self.has_repeat_mask:
+                features[TFR_REPEAT_MASK] = tf.io.FixedLenFeature([], tf.string)
 
             # parse example into features
             parsed_features = tf.io.parse_single_example(
@@ -180,6 +184,13 @@ class SeqDataset:
                     mask = tf.reshape(mask, [self.seq_length])
                 mask = tf.cast(mask, tf.float32)
 
+            # decode binary mask
+            if self.has_repeat_mask:
+                repeat_mask = tf.io.decode_raw(parsed_features[TFR_REPEAT_MASK], tf.uint8)
+                if not raw:
+                    repeat_mask = tf.reshape(repeat_mask, [self.seq_length])
+                repeat_mask = tf.cast(repeat_mask, tf.float32)
+
             ret_tuple = [sequence]
             if self.has_targets:
                 ret_tuple.append(targets)
@@ -187,6 +198,8 @@ class SeqDataset:
                 ret_tuple.append(label)
             if self.has_mask:
                 ret_tuple.append(mask)
+            if self.has_repeat_mask:
+                ret_tuple.append(repeat_mask)
             
             return ret_tuple
 
@@ -319,6 +332,7 @@ class SeqDataset:
         return_outputs=True,
         return_labels=False,
         return_masks=False,
+        return_repeat_masks=False,
         step=1,
         target_slice=None,
         dtype="float16",
@@ -344,13 +358,14 @@ class SeqDataset:
         targets = []
         labels = []
         masks = []
+        repeat_masks = []
 
         # collect inputs and outputs
         for raw_tuple in dataset:
             
             seq_raw = raw_tuple[0]
             
-            targets_raw, label_raw, mask_raw = None, None, None
+            targets_raw, label_raw, mask_raw, repeat_mask_raw = None, None, None, None
             
             if self.has_targets :
                 targets_raw = raw_tuple[1]
@@ -360,18 +375,26 @@ class SeqDataset:
             
                     if self.has_mask:
                         mask_raw = raw_tuple[3]
+                        if self.has_repeat_mask:
+                            repeat_mask_raw = raw_tuple[4]
                 else :
                     if self.has_mask:
                         mask_raw = raw_tuple[2]
+                        if self.has_repeat_mask:
+                            repeat_mask_raw = raw_tuple[3]
             else :
                 if self.has_label :
                     label_raw = raw_tuple[1]
             
                     if self.has_mask:
                         mask_raw = raw_tuple[2]
+                        if self.has_repeat_mask:
+                            repeat_mask_raw = raw_tuple[3]
                 else :
                     if self.has_mask:
                         mask_raw = raw_tuple[1]
+                        if self.has_repeat_mask:
+                            repeat_mask_raw = raw_tuple[2]
             
             # sequence
             if return_inputs:
@@ -406,11 +429,20 @@ class SeqDataset:
                     mask = mask[crop_len:-crop_len]
                 masks.append(mask)
 
+            # mask
+            if return_repeat_masks:
+                repeat_mask = repeat_mask_raw.numpy().reshape((self.seq_length,))
+                if self.seq_length_crop > 0:
+                    crop_len = (self.seq_length - self.seq_length_crop) // 2
+                    repeat_mask = repeat_mask[crop_len:-crop_len]
+                repeat_masks.append(repeat_mask)
+
         # make arrays
         seqs_1hot = np.array(seqs_1hot)
         targets = np.array(targets, dtype=dtype)
         labels = np.array(labels, dtype='int32')
         masks = np.array(masks)
+        repeat_masks = np.array(repeat_masks)
 
         # return bundle
         ret_tuple = []
@@ -422,6 +454,8 @@ class SeqDataset:
             ret_tuple.append(labels)
         if return_masks :
             ret_tuple.append(masks)
+        if return_repeat_masks :
+            ret_tuple.append(repeat_masks)
         
         return ret_tuple
 

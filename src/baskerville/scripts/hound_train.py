@@ -104,13 +104,15 @@ def main():
         data_stats = json.load(data_stats_open)
     num_species = data_stats.get("num_species", 1)
 
+    print("num_species: ", num_species)
+
     # read datasets
     train_data = []
     eval_data = []
     strand_pairs = []
 
     for data_dir in args.data_dirs:
-        # set strand pairs
+        # set strand pairs 
         targets_df = pd.read_csv("%s/targets.txt" % data_dir, sep="\t", index_col=0)
         if "strand_pair" in targets_df.columns:
             strand_pairs.append(np.array(targets_df.strand_pair))
@@ -128,6 +130,7 @@ def main():
                 has_targets=params_train.get("has_targets", True),
                 has_label=params_train.get("has_label", False),
                 has_mask=params_train.get("has_mask", False),
+                has_repeat_mask= params_train.get("has_repeat_mask", False),
             )
         )
 
@@ -142,6 +145,7 @@ def main():
                 has_targets=params_train.get("has_targets", True),
                 has_label=params_train.get("has_label", False),
                 has_mask=params_train.get("has_mask", False),
+                has_repeat_mask= params_train.get("has_repeat_mask", False),
             )
         )
 
@@ -209,7 +213,7 @@ def main():
 
     # train model
     if args.keras_fit:
-        seqnn_trainer.fit_keras(seqnn_model)
+        seqnn_trainer.fit(seqnn_model)
     else:
         if len(args.data_dirs) == 1:
             if params_train["loss"] == 'mlm':

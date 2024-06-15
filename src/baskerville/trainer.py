@@ -121,6 +121,8 @@ class Trainer:
         #other mlm arguments
         self.exon_loss_scale = self.params.get("exon_loss_scale", None)
         self.non_exon_loss_scale = self.params.get("non_exon_loss_scale", None)
+        self.repeat_loss_scale = self.params.get("repeat_loss_scale", None)
+        self.non_repeat_loss_scale = self.params.get("non_repeat_loss_scale", None)
         self.exon_mut_rate = self.params.get("exon_mut_rate", None)
         self.repeat_eval = self.params.get("repeat_eval", 1)
 
@@ -728,8 +730,8 @@ class Trainer:
                 #valid_loss(loss)
                 return loss
             
-            def prep_mlm(x, label, mask_size, exon_mask=None, training=False, augment_rc=True):
-                
+            # def prep_mlm(x, label, mask_size, exon_mask=None, training=False, augment_rc=True):
+            def prep_mlm(x, label, mask_size, exon_mask=None, repeat_mask=None, training=False, augment_rc=True):
                 # randomly revcomp the sequence(s) if in training mode
                 if training and augment_rc :
                     do_rc = tf.cast(tf.random.uniform([x.shape[0]], minval=0, maxval=2, dtype=tf.int32), dtype=tf.bool)
@@ -746,16 +748,34 @@ class Trainer:
                             tf.reverse(exon_mask, axis=[1]),
                             exon_mask,
                         )
+                    if repeat_mask is not None:
+                        repeat_mask = tf.where(
+                            do_rc[:, None],
+                            tf.reverse(repeat_mask, axis=[1]),
+                            repeat_mask,
+                        )
+
                 
                 # optionally set position-specific loss weight scales from binary mask
                 sw = None
                 
+                # exon_mask scaling
                 if exon_mask is not None and self.exon_loss_scale is not None :
                     #non_exon_loss_scale = 1. + (1. - self.exon_loss_scale) * tf.math.minimum(tf.reduce_sum(exon_mask, axis=1) / (exon_mask.shape[1] - tf.reduce_sum(exon_mask, axis=1)), 16.)
-                    
                     #sw = exon_mask * self.exon_loss_scale + (1 - exon_mask) * non_exon_loss_scale[:, None]
                     sw = exon_mask * self.exon_loss_scale + (1 - exon_mask) * self.non_exon_loss_scale
                 
+                # repeat_mask scaling
+                if repeat_mask is not None and self.repeat_loss_scale is not None:
+                    repeat_sw = repeat_mask * self.repeat_loss_scale + (1 - repeat_mask) * self.non_repeat_loss_scale
+                    # print("repeat_sw: ", repeat_sw)
+                    if sw is None:
+                        sw = repeat_sw
+                    else:
+                        sw *= repeat_sw
+                # print("sw: ", sw)
+                # print(""+1)
+
                 # get indices for random input mask
                 ind = tf.tile(tf.range(x.shape[1], dtype=tf.int32)[None, :], (x.shape[0], 1))
 
@@ -865,21 +885,32 @@ class Trainer:
                 # train
                 t0 = time.time()
                 train_iter = iter(self.train_data[0].dataset)
+                # print("self.train_epoch_batches[0]: ", self.train_epoch_batches[0])
+                # print("self.train_epoch_batches[0]: ", len(self.train_epoch_batches))
+                # print("self.eval_epoch_batches[0]: ", self.eval_epoch_batches[0])
+                # print(""+1)
                 for si in range(self.train_epoch_batches[0]):
                     
                     if self.steps_per_epoch_max is not None and si >= self.steps_per_epoch_max:
                         break
                     
-                    x, label, exon_mask = None, None, None
-                    if self.train_data[0].has_mask :
-                        x, label, exon_mask = safe_next(train_iter)
-                    else :
+                    # x, label, exon_mask = None, None, None
+                    # if self.train_data[0].has_mask :
+                    #     x, label, exon_mask = safe_next(train_iter)
+                    # else :
+                    #     x, label = safe_next(train_iter)
+                    x, label, exon_mask, repeat_mask = None, None, None, None
+                    if self.train_data[0].has_mask:
+                        x, label, exon_mask, repeat_mask = safe_next(train_iter)
+                    else:
                         x, label = safe_next(train_iter)
+
                     
                     mask_size = tf.cast(self.mask_rate * x.shape[1], dtype=tf.int32)
                     
                     if self.strategy is None:
-                        x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=True)
+                        # x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=True)
+                        x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, repeat_mask=repeat_mask, training=True)
                         train_step(x_masked, x, ind, sample_weight=sw)
                     
                     if ei == epoch_start and si == 0:
@@ -888,11 +919,17 @@ class Trainer:
                 # evaluate
                 for x_tuple in self.eval_data[0].dataset:
                     
-                    x, label, exon_mask = None, None, None
-                    if self.eval_data[0].has_mask :
-                        x, label, exon_mask = x_tuple
-                    else :
+                    # x, label, exon_mask = None, None, None
+                    # if self.eval_data[0].has_mask :
+                    #     x, label, exon_mask = x_tuple
+                    # else :
+                    #     x, label = x_tuple
+                    x, label, exon_mask, repeat_mask = None, None, None, None
+                    if self.eval_data[0].has_mask:
+                        x, label, exon_mask, repeat_mask = x_tuple
+                    else:
                         x, label = x_tuple
+
                     
                     mask_size = tf.cast(self.mask_rate * x.shape[1], dtype=tf.int32)
                     
@@ -903,7 +940,8 @@ class Trainer:
                         eval_loss_repeats = []
                         for _ in range(self.repeat_eval) :
                             
-                            x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=False)
+                            # x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=False)
+                            x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, repeat_mask=repeat_mask, training=False)
                             eval_loss_repeats.append(eval_step(x_masked, x, ind, sample_weight=sw)[..., None])
                         
                         eval_loss = tf.reduce_mean(tf.concat(eval_loss_repeats, axis=-1), axis=-1)
@@ -1262,5 +1300,6 @@ def safe_next(data_iter, retry=5, sleep=10):
     if d is None:
         # let it crash
         d = next(data_iter)
-
+    # for di in range(len(d)):
+    #     print("di: ", d[di].shape)
     return d
