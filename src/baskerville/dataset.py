@@ -15,7 +15,7 @@
 import glob
 import json
 import pdb
-import sys
+import sys, os
 
 from natsort import natsorted
 import numpy as np
@@ -103,14 +103,22 @@ class SeqDataset:
             targets_df = pd.read_csv(targets_slice_file, index_col=0, sep="\t")
             self.targets_slice = np.array(targets_df.index)
 
-        # extract or compute sequence statistics
-        if self.tfr_pattern is None:
-            self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
-            self.num_seqs = data_stats["%s_seqs" % self.split_label]
-        else:
-            self.tfr_path = "%s/tfrecords/%s" % (self.data_dir, self.tfr_pattern)
-            self.compute_stats()
-
+        if split_label == "train":
+            # extract or compute sequence statistics
+            if self.tfr_pattern is None:
+                self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
+                self.num_seqs = data_stats["%s_seqs" % self.split_label]
+            else:
+                self.tfr_path = "%s/tfrecords/%s" % (self.data_dir, self.tfr_pattern)
+                self.compute_stats()
+        else: 
+            if self.tfr_pattern is None:
+                self.tfr_path = "%s/%s_set/%s-*.tfr" % (os.path.dirname(self.data_dir), self.split_label, self.split_label)
+                self.num_seqs = data_stats["%s_seqs" % self.split_label]
+            else:
+                self.tfr_path = "%s/%s_set/%s" % (os.path.dirname(self.data_dir), self.split_label, self.split_label)
+                self.compute_stats()
+        print("self.tfr_path: ", self.tfr_path)
         # make tf.data.Dataset object
         self.make_dataset()
 

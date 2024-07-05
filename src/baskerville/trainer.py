@@ -761,8 +761,9 @@ class Trainer:
                 
                 # exon_mask scaling
                 if exon_mask is not None and self.exon_loss_scale is not None :
-                    #non_exon_loss_scale = 1. + (1. - self.exon_loss_scale) * tf.math.minimum(tf.reduce_sum(exon_mask, axis=1) / (exon_mask.shape[1] - tf.reduce_sum(exon_mask, axis=1)), 16.)
-                    #sw = exon_mask * self.exon_loss_scale + (1 - exon_mask) * non_exon_loss_scale[:, None]
+                    # exon_ratio = tf.reduce_mean(exon_mask)
+                    # dynamic_exon_scale = self.exon_loss_scale * exon_ratio + self.non_exon_loss_scale * (1 - exon_ratio)
+                    # sw = exon_mask * dynamic_exon_scale + (1 - exon_mask)
                     sw = exon_mask * self.exon_loss_scale + (1 - exon_mask) * self.non_exon_loss_scale
                 
                 # repeat_mask scaling
@@ -773,8 +774,11 @@ class Trainer:
                         sw = repeat_sw
                     else:
                         sw *= repeat_sw
-                # print("sw: ", sw)
-                # print(""+1)
+
+                # Normalize the final sample weight to have a mean of 1
+                if sw is not None:
+                    sw /= tf.reduce_mean(sw)
+
 
                 # get indices for random input mask
                 ind = tf.tile(tf.range(x.shape[1], dtype=tf.int32)[None, :], (x.shape[0], 1))

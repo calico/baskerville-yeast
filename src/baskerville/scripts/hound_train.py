@@ -112,6 +112,7 @@ def main():
     strand_pairs = []
 
     for data_dir in args.data_dirs:
+        print("data_dir: ", data_dir)
         # set strand pairs 
         targets_df = pd.read_csv("%s/targets.txt" % data_dir, sep="\t", index_col=0)
         if "strand_pair" in targets_df.columns:
@@ -150,7 +151,6 @@ def main():
         )
 
     params_model["strand_pair"] = strand_pairs
-    
     params_model["num_features"] = 4
     if params_train["loss"] == 'mlm':
         params_model["num_features"] = num_species + 5
