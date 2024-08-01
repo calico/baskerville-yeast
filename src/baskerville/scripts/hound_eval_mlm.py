@@ -67,6 +67,11 @@ def main():
         default=None,
         help="TFR pattern string appended to data_dir/tfrecords for subsetting [Default: %(default)s]",
     )
+    parser.add_argument(
+        "--eval_dir",
+        default=None,
+        help="The directory to the validation data_dir/tfrecords [Default: %(default)s]",
+    )
 
     parser.add_argument("params_file", help="JSON file with model parameters")
     parser.add_argument("model_file", help="Trained model HDF5.")
@@ -100,6 +105,8 @@ def main():
     if params_train["loss"] == 'mlm':
         params_model["num_features"] = num_species + 5
 
+    print("params_train: ", params_train)
+
     # construct eval data
     eval_data = dataset.SeqDataset(
         args.data_dir,
@@ -110,11 +117,14 @@ def main():
         has_targets=params_train.get("has_targets", True),
         has_label=params_train.get("has_label", False),
         has_mask=params_train.get("has_mask", False),
-        has_repeat_mask= params_train.get("has_repeat_mask", False)
+        has_repeat_mask= params_train.get("has_repeat_mask", False),
+        eval_dir= args.eval_dir
     )
 
     # initialize model
     seqnn_model = seqnn.SeqNN(params_model)
+    print("Restoring model from %s;" % args.model_file)
+    print("Model summary: ", seqnn_model)
     seqnn_model.restore(args.model_file, 0)
 
     #######################################################

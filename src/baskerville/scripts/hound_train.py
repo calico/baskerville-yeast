@@ -77,12 +77,20 @@ def main():
         default=None,
         help="Evaluation TFR pattern string appended to data_dir/tfrecords [Default: %(default)s]",
     )
+    parser.add_argument(
+        "--eval_dir",
+        default=None,
+        help="The directory to the validation data_dir/tfrecords [Default: %(default)s]",
+    )
 
     parser.add_argument("params_file", help="JSON file with model parameters")
     parser.add_argument(
         "data_dirs", nargs="+", help="Train/valid/test data directorie(s)"
     )
     args = parser.parse_args()
+
+    print("1 args.restore: ", args.restore)
+    print("1 args.eval_dir: ", args.eval_dir)
 
     if args.keras_fit and len(args.data_dirs) > 1:
         print("Cannot use keras fit method with multi-genome training.")
@@ -103,8 +111,10 @@ def main():
     with open(data_stats_file) as data_stats_open:
         data_stats = json.load(data_stats_open)
     num_species = data_stats.get("num_species", 1)
-
+    if params_train["task"] == "fine-tune":
+        num_species = 165
     print("num_species: ", num_species)
+
 
     # read datasets
     train_data = []
@@ -132,6 +142,7 @@ def main():
                 has_label=params_train.get("has_label", False),
                 has_mask=params_train.get("has_mask", False),
                 has_repeat_mask= params_train.get("has_repeat_mask", False),
+                eval_dir= args.eval_dir
             )
         )
 
@@ -147,6 +158,7 @@ def main():
                 has_label=params_train.get("has_label", False),
                 has_mask=params_train.get("has_mask", False),
                 has_repeat_mask= params_train.get("has_repeat_mask", False),
+                eval_dir=args.eval_dir
             )
         )
 
@@ -154,6 +166,12 @@ def main():
     params_model["num_features"] = 4
     if params_train["loss"] == 'mlm':
         params_model["num_features"] = num_species + 5
+
+    if params_train["task"] == "fine-tune":
+        params_model["num_features"] = num_species + 5
+
+    print("params_model[num_features]: ", params_model["num_features"])
+    print("args.restore: ", args.restore)
 
     if args.mixed_precision:
         mixed_precision.set_global_policy("mixed_float16")
@@ -164,6 +182,9 @@ def main():
 
         # initialize model
         seqnn_model = seqnn.SeqNN(params_model)
+
+        print("Restoring model from", args.restore, "trunk:", args.trunk)
+        print("Model summary: ", seqnn_model)
 
         # restore
         if args.restore:
@@ -219,7 +240,7 @@ def main():
             if params_train["loss"] == 'mlm':
                 seqnn_trainer.fit_mlm(seqnn_model)
             else:
-                seqnn_trainer.fit_tape(seqnn_model)
+                seqnn_trainer.fit_tape(seqnn_model, params_train, num_species)
         else:
             seqnn_trainer.fit2(seqnn_model)
 

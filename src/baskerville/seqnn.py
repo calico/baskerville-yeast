@@ -26,6 +26,29 @@ from baskerville import dataset
 from baskerville import layers
 from baskerville import metrics
 
+import h5py, json
+
+def print_weights_from_h5(model_file):
+    """Print weights dimensions directly from the HDF5 weight file."""
+    def print_shape(name, obj):
+        if isinstance(obj, h5py.Dataset):
+            print(f"  Weight {name}: {obj.shape}")
+
+    with h5py.File(model_file, 'r') as f:
+        for layer_name in f.keys():
+            print(f"H5 Layer {layer_name}:")
+            layer_group = f[layer_name]
+            layer_group.visititems(print_shape)
+
+
+def print_model_weights(model):
+    """Print weights dimensions of a given model."""
+    for layer in model.layers:
+        weights = layer.get_weights()
+        if weights:  # Check if the layer has weights
+            for i, weight in enumerate(weights):
+                print(f"Layer {layer.name}, Weight {i}: {weight.shape}")
+
 
 class SeqNN:
     """Sequence neural network model.
@@ -1000,16 +1023,88 @@ class SeqNN:
 
         return preds
 
-    def restore(self, model_file, head_i=0, trunk=False, by_name=False):
+
+    def restore(self, model_file, head_i=0, trunk=False, by_name=True):
         """Restore weights from saved model."""
         if trunk:
             self.model_trunk.load_weights(model_file)
         else:
-            if by_name :
-                self.models[head_i].load_weights(model_file, by_name=True, skip_mismatch=True)
-            else :
+            # Print current model weights
+            print("Current model weights:")
+            print_model_weights(self.models[head_i])
+            
+            # Print expected weights from the model file
+            print("\nExpected model weights from model_file:")
+            print_weights_from_h5(model_file)
+
+            # Load the weights into the actual model
+            print("model_file = ", model_file)
+            print("by_name = ", by_name)
+            print("head_i = ", head_i)
+            print("trunk = ", trunk)
+            print("by_name = ", by_name)
+
+            if by_name:
+                try:
+                    print("Trying to load weights by name")
+                    print("self.models[head_i]: ", self.models[head_i])
+                    self.models[head_i].load_weights(model_file, by_name=True, skip_mismatch=True)
+                    print("*** Successfully loaded weights by name")
+                except ValueError as e:
+                    print(f"Error loading weights by name: {e}")
+            else:
+                print("Trying to load weights without by_name")
+                print("*** Successfully loaded weights without by name")
                 self.models[head_i].load_weights(model_file)
             self.model = self.models[head_i]
+
+            # if by_name :
+            #     # self.models[head_i].load_weights(model_file, by_name=True, skip_mismatch=True)
+            #     try:
+            #         self.models[head_i].load_weights(model_file, by_name=True, skip_mismatch=True)
+            #     except ValueError as e:
+            #         print(f"Error loading weights by name: {e}")
+            #         for layer in self.models[head_i].layers:
+            #             weights = layer.get_weights()
+            #             if weights:  # Check if the layer has weights
+            #                 for i, weight in enumerate(weights):
+            #                     print(f"Layer {layer.name}, Weight {i}: {weight.shape}")
+
+            # else :
+            #     self.models[head_i].load_weights(model_file)
+            # self.model = self.models[head_i]
+
+    def apply_new_params(self, new_params, head_i=0):
+        """Apply new parameters to model."""
+        with open(new_params) as new_params_open:
+            new_params = json.load(new_params_open)
+        new_params_model = new_params["model"]
+        new_params_train = new_params["train"]
+        new_params_model["num_features"] = 170
+        # Transfer weights from original model to new model
+        original_model_layers = [layer for layer in self.model.layers]
+        for layer in original_model_layers:
+            print("\tOriginal layer: ", layer.name)
+
+        new_model = SeqNN(new_params_model)
+        print("Initializing new model...")
+        new_model_layers = [layer for layer in new_model.model.layers]
+        for layer in new_model_layers:
+            print("\tNew layer: ", layer.name)            
+
+        # Transfer weights from original model to new model
+        for original_layer, new_layer in zip(original_model_layers, new_model_layers):
+            try:
+                new_layer.set_weights(original_layer.get_weights())
+                print(f"Transferred weights from {original_layer.name} to {new_layer.name}")
+            except Exception as e:
+                print(f"Could not transfer weights from {original_layer.name} to {new_layer.name}: {e}")
+        print("Weights transferred from original model to new model.")
+        self.model = new_model.model
+        params_train = new_params_train
+        print("New model summary: ", self.model)
+        print("New params: ", params_train)
+
 
     def save(self, model_file, trunk=False):
         """Save model weights to file.

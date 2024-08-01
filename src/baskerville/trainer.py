@@ -508,8 +508,9 @@ class Trainer:
                     valid_r[di].reset_states()
                     valid_r2[di].reset_states()
 
-    def fit_tape(self, seqnn_model):
+    def fit_tape(self, seqnn_model, params_train, num_species):
         """Train the model using a custom tf.GradientTape loop."""
+        print("Inside fit_tape")
         if not self.compiled:
             self.compile(seqnn_model)
         model = seqnn_model.model
@@ -619,6 +620,26 @@ class Trainer:
                 train_iter = iter(self.train_data[0].dataset)
                 for si in range(self.train_epoch_batches[0]):
                     x, y = safe_next(train_iter)
+                    # print("x shape: ", x.shape) 
+                    # print("y shape: ", y.shape)                     
+                    if params_train["task"] == "fine-tune":
+                        # !!!Change the dimension of the X for fine-tuning
+                        # Create a new tensor filled with zeros of the desired shape
+                        new_shape = x.shape[:-1] + (num_species+1,)
+                        # Copy the original tensor into the first 4 positions
+                        x_new = tf.concat([
+                            x, 
+                            tf.zeros(new_shape)
+                        ], axis=-1)
+                        # Use TensorFlow indexing to set the desired column to 1
+                        x_new = tf.tensor_scatter_nd_update(
+                            x_new,
+                            indices=tf.constant([[i, j, 5] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
+                            updates=tf.ones((x_new.shape[0] * x_new.shape[1],))
+                        )
+                        x = x_new
+                    # print("x shape after: ", x.shape) 
+                    # print("y shape after: ", y.shape) 
                     if self.strategy is not None:
                         train_step_distr(x, y)
                     else:
@@ -628,6 +649,22 @@ class Trainer:
 
                 # evaluate
                 for x, y in self.eval_data[0].dataset:
+                    if params_train["task"] == "fine-tune":
+                        # !!!Change the dimension of the X for fine-tuning
+                        # Create a new tensor filled with zeros of the desired shape
+                        new_shape = x.shape[:-1] + (num_species+1,)
+                        # Copy the original tensor into the first 4 positions
+                        x_new = tf.concat([
+                            x, 
+                            tf.zeros(new_shape)
+                        ], axis=-1)
+                        # Use TensorFlow indexing to set the desired column to 1
+                        x_new = tf.tensor_scatter_nd_update(
+                            x_new,
+                            indices=tf.constant([[i, j, 5] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
+                            updates=tf.ones((x_new.shape[0] * x_new.shape[1],))
+                        )
+                        x = x_new
                     if self.strategy is not None:
                         eval_step_distr(x, y)
                     else:
@@ -849,12 +886,17 @@ class Trainer:
                 # apply mask
                 x_masked = x_w_token * (1 - mask) + mask_bias * mask
 
+                # print("x_masked before: ", x_masked.shape)
+                # print("label shape: ", label.shape)
+                # print("label: ", label)
+                # print("tf.tile(label, (1, x.shape[1], 1)): ", tf.tile(label, (1, x.shape[1], 1)),)
                 # broadcast and concat label to input (along channels)
                 x_masked = tf.concat([
                     x_masked,
                     tf.tile(label, (1, x.shape[1], 1)),
                 ], axis=-1)
-                
+
+                # print("x_masked after: ", x_masked.shape)
                 return x_masked, x, ind, sw
         
 
@@ -915,6 +957,9 @@ class Trainer:
                     if self.strategy is None:
                         # x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=True)
                         x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, repeat_mask=repeat_mask, training=True)
+
+                        print("x_masked shape: ", x_masked.shape)
+                        print("x shape: ", x.shape) 
                         train_step(x_masked, x, ind, sample_weight=sw)
                     
                     if ei == epoch_start and si == 0:

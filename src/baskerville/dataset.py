@@ -68,6 +68,7 @@ class SeqDataset:
         has_label: bool = False,
         has_mask: bool = False,
         has_repeat_mask: bool = False,
+        eval_dir: str = "",
     ):
         self.data_dir = data_dir
         self.split_label = split_label
@@ -81,7 +82,23 @@ class SeqDataset:
         self.has_label = has_label
         self.has_mask = has_mask
         self.has_repeat_mask = has_repeat_mask
+        self.eval_dir = eval_dir
 
+        print("self.data_dir: ", self.data_dir)
+        print("self.split_label: ", self.split_label)   
+        print("self.batch_size: ", self.batch_size) 
+        print("self.shuffle_buffer: ", self.shuffle_buffer) 
+        print("self.seq_length_crop: ", self.seq_length_crop)
+        print("self.mode: ", self.mode) 
+        print("self.tfr_pattern: ", self.tfr_pattern)
+        print("self.shuffle_records: ", self.shuffle_records)
+        print("self.has_targets: ", self.has_targets)
+        print("self.has_label: ", self.has_label)
+        print("self.has_mask: ", self.has_mask)
+        print("self.has_repeat_mask: ", self.has_repeat_mask)
+        print("self.eval_dir: ", self.eval_dir)
+
+        # self.eval_dir = "/scratch4/khc/yeast_ssm/data/yeast/ensembl_fungi_59/test_chrXI_chrXIII_chrXV__valid_chrXII_chrXIV_chrXVI/"
         # read data parameters
         data_stats_file = "%s/statistics.json" % self.data_dir
         with open(data_stats_file) as data_stats_open:
@@ -103,7 +120,7 @@ class SeqDataset:
             targets_df = pd.read_csv(targets_slice_file, index_col=0, sep="\t")
             self.targets_slice = np.array(targets_df.index)
 
-        if split_label == "train":
+        if split_label == "train" or split_label == "valid":
             # extract or compute sequence statistics
             if self.tfr_pattern is None:
                 self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
@@ -113,10 +130,12 @@ class SeqDataset:
                 self.compute_stats()
         else: 
             if self.tfr_pattern is None:
-                self.tfr_path = "%s/%s_set/%s-*.tfr" % (os.path.dirname(self.data_dir), self.split_label, self.split_label)
+                # self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
+                self.tfr_path = "%s/%s_set/%s-*.tfr" % (self.eval_dir, self.split_label, self.split_label)
                 self.num_seqs = data_stats["%s_seqs" % self.split_label]
             else:
-                self.tfr_path = "%s/%s_set/%s" % (os.path.dirname(self.data_dir), self.split_label, self.split_label)
+                # self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
+                self.tfr_path = "%s/%s_set/%s" % (self.eval_dir, self.split_label, self.split_label)
                 self.compute_stats()
         print("self.tfr_path: ", self.tfr_path)
         # make tf.data.Dataset object
