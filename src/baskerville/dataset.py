@@ -69,6 +69,7 @@ class SeqDataset:
         has_mask: bool = False,
         has_repeat_mask: bool = False,
         eval_dir: str = "",
+        global_eval: bool = False
     ):
         self.data_dir = data_dir
         self.split_label = split_label
@@ -120,15 +121,7 @@ class SeqDataset:
             targets_df = pd.read_csv(targets_slice_file, index_col=0, sep="\t")
             self.targets_slice = np.array(targets_df.index)
 
-        if split_label == "train" or split_label == "valid":
-            # extract or compute sequence statistics
-            if self.tfr_pattern is None:
-                self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
-                self.num_seqs = data_stats["%s_seqs" % self.split_label]
-            else:
-                self.tfr_path = "%s/tfrecords/%s" % (self.data_dir, self.tfr_pattern)
-                self.compute_stats()
-        else: 
+        if global_eval == True:
             if self.tfr_pattern is None:
                 # self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
                 self.tfr_path = "%s/%s_set/%s-*.tfr" % (self.eval_dir, self.split_label, self.split_label)
@@ -137,7 +130,14 @@ class SeqDataset:
                 # self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
                 self.tfr_path = "%s/%s_set/%s" % (self.eval_dir, self.split_label, self.split_label)
                 self.compute_stats()
-        print("self.tfr_path: ", self.tfr_path)
+        else:
+            # extract or compute sequence statistics
+            if self.tfr_pattern is None:
+                self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
+                self.num_seqs = data_stats["%s_seqs" % self.split_label]
+            else:
+                self.tfr_path = "%s/tfrecords/%s" % (self.data_dir, self.tfr_pattern)
+                self.compute_stats()
         # make tf.data.Dataset object
         self.make_dataset()
 
@@ -529,10 +529,13 @@ def targets_prep_strand(targets_df):
     # attach strand
     targets_strand = []
     for _, target in targets_df.iterrows():
-        if target.strand_pair == target.name:
-            targets_strand.append(".")
-        else:
-            targets_strand.append(target.identifier[-1])
+        # print("target: ", target)
+        # if target.strand_pair == target.name:
+        #     targets_strand.append(".")
+        # else:
+        #     targets_strand.append(target.identifier[-1])
+
+        targets_strand.append(".")
     targets_df["strand"] = targets_strand
 
     # collapse stranded

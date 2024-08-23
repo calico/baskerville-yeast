@@ -114,7 +114,7 @@ def main():
     if params_train["task"] == "fine-tune":
         num_species = 165
     print("num_species: ", num_species)
-
+    print("params_train: ", params_train)
 
     # read datasets
     train_data = []

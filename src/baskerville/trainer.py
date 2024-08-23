@@ -634,7 +634,7 @@ class Trainer:
                         # Use TensorFlow indexing to set the desired column to 1
                         x_new = tf.tensor_scatter_nd_update(
                             x_new,
-                            indices=tf.constant([[i, j, 5] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
+                            indices=tf.constant([[i, j, 114] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
                             updates=tf.ones((x_new.shape[0] * x_new.shape[1],))
                         )
                         x = x_new
@@ -661,7 +661,7 @@ class Trainer:
                         # Use TensorFlow indexing to set the desired column to 1
                         x_new = tf.tensor_scatter_nd_update(
                             x_new,
-                            indices=tf.constant([[i, j, 5] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
+                            indices=tf.constant([[i, j, 114] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
                             updates=tf.ones((x_new.shape[0] * x_new.shape[1],))
                         )
                         x = x_new
@@ -812,9 +812,9 @@ class Trainer:
                     else:
                         sw *= repeat_sw
 
-                # Normalize the final sample weight to have a mean of 1
-                if sw is not None:
-                    sw /= tf.reduce_mean(sw)
+                # # Normalize the final sample weight to have a mean of 1
+                # if sw is not None:
+                #     sw /= tf.reduce_mean(sw)
 
 
                 # get indices for random input mask
@@ -957,9 +957,6 @@ class Trainer:
                     if self.strategy is None:
                         # x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, training=True)
                         x_masked, x, ind, sw = prep_mlm(x, label, mask_size, exon_mask=exon_mask, repeat_mask=repeat_mask, training=True)
-
-                        print("x_masked shape: ", x_masked.shape)
-                        print("x shape: ", x.shape) 
                         train_step(x_masked, x, ind, sample_weight=sw)
                     
                     if ei == epoch_start and si == 0:
