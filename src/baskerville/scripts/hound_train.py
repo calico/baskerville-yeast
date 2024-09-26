@@ -82,6 +82,13 @@ def main():
         default=None,
         help="The directory to the validation data_dir/tfrecords [Default: %(default)s]",
     )
+    parser.add_argument(
+        "--global-eval",
+        action="store_true",
+        default=False,
+        help="Restore only model trunk [Default: %(default)s]",
+    )
+
 
     parser.add_argument("params_file", help="JSON file with model parameters")
     parser.add_argument(
@@ -142,7 +149,7 @@ def main():
                 has_label=params_train.get("has_label", False),
                 has_mask=params_train.get("has_mask", False),
                 has_repeat_mask= params_train.get("has_repeat_mask", False),
-                eval_dir= args.eval_dir
+                eval_dir= args.eval_dir,
             )
         )
 
@@ -158,7 +165,7 @@ def main():
                 has_label=params_train.get("has_label", False),
                 has_mask=params_train.get("has_mask", False),
                 has_repeat_mask= params_train.get("has_repeat_mask", False),
-                eval_dir=args.eval_dir
+                eval_dir=args.eval_dir,
             )
         )
 
