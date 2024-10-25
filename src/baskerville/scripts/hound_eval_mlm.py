@@ -231,7 +231,7 @@ def main():
                 x_masked[0, j, 4] = 1.
             
             # predict
-            yp = seqnn_model.model.predict(x=[x_masked], batch_size=1, verbose=False).astype('float16')
+            yp = seqnn_model.model.predict(x=[x_masked], batch_size=1, verbose=False)[..., :4].astype('float16')
             
             # optionally make reverse-complement predictions and average
             if args.rc :
@@ -242,7 +242,7 @@ def main():
                 ], axis=-1)[None, ...]
                 
                 # predict
-                yp_rc = seqnn_model.model.predict(x=[x_masked_rc], batch_size=1, verbose=False).astype('float16')
+                yp_rc = seqnn_model.model.predict(x=[x_masked_rc], batch_size=1, verbose=False)[..., :4].astype('float16')
 
                 # print("yp_rc: ", yp_rc.shape)
                 # average predictions
