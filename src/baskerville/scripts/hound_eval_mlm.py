@@ -68,6 +68,17 @@ def main():
         help="TFR pattern string appended to data_dir/tfrecords for subsetting [Default: %(default)s]",
     )
     parser.add_argument(
+        "--tfr-root-dir",
+        dest="tfr_root_dir",
+        default="tfrecords",
+        help="Root directory for TFR files [Default: %default]",
+    )
+    parser.add_argument(
+        "--seq-bed",
+        default=None,
+        help="BED file with sequences to evaluate [Default: %(default)s]",
+    )
+    parser.add_argument(
         "--eval_dir",
         default=None,
         help="The directory to the validation data_dir/tfrecords [Default: %(default)s]",
@@ -114,6 +125,7 @@ def main():
         batch_size=1,
         mode="eval",
         tfr_pattern=args.tfr_pattern,
+        tfr_root_dir=args.tfr_root_dir,
         has_targets=params_train.get("has_targets", True),
         has_label=params_train.get("has_label", False),
         has_mask=params_train.get("has_mask", False),
@@ -135,8 +147,16 @@ def main():
     labels = []
     weight_scale = []
     
+    print("Length of eval_data.dataset: ", len(list(eval_data.dataset)))
+    columns = ['chrom', 'start', 'end', 'name', 'species']  # typical BED columns
+    df = pd.read_csv(args.seq_bed, sep='\t', names=columns)
+    print("df size: ", df.shape)
     # compute predictions
     for x_ix, x_tuple in enumerate(eval_data.dataset) :
+        # print(f'df.iloc[{x_ix}]', df.iloc[x_ix])
+        # print(f'df.iloc[{x_ix}]["species"]', df.iloc[x_ix]["species"])
+        if df.iloc[x_ix]["species"] != "GCA_000146045_2":
+            continue
         if x_ix % 64 == 0 :
             print('Evaluating sequence pattern = ' + str(x_ix), flush=True)
         
@@ -231,7 +251,7 @@ def main():
                 x_masked[0, j, 4] = 1.
             
             # predict
-            yp = seqnn_model.model.predict(x=[x_masked], batch_size=1, verbose=False).astype('float16')
+            yp = seqnn_model.model.predict(x=[x_masked], batch_size=1, verbose=False)
             
             # optionally make reverse-complement predictions and average
             if args.rc :
@@ -242,12 +262,13 @@ def main():
                 ], axis=-1)[None, ...]
                 
                 # predict
-                yp_rc = seqnn_model.model.predict(x=[x_masked_rc], batch_size=1, verbose=False).astype('float16')
+                yp_rc = seqnn_model.model.predict(x=[x_masked_rc], batch_size=1, verbose=False)
 
                 # print("yp_rc: ", yp_rc.shape)
                 # average predictions
                 yp = (yp + yp_rc[:, ::-1, ::-1]) / 2.
                 # print("yp: ", yp)
+            yp = yp.astype('float16')
             
             # fill in predictions at masked positions
             for j in ind.tolist() :
