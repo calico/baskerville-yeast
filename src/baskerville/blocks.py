@@ -1953,6 +1953,48 @@ def final(
     return current
 
 
+def final_4_2(
+    inputs,
+    units,
+    kernel_initializer="he_normal",
+    l2_scale=0,
+    l1_scale=0,
+    **kwargs,
+):
+    """Final simple transformation before comparison to targets (split 4 / 2).
+
+    Args:
+      inputs:         [batch_size, seq_length, features] input sequence
+      units:          Dense units
+      flatten:        Flatten positional axis.
+      l2_scale:       L2 regularization weight.
+      l1_scale:       L1 regularization weight.
+
+    Returns:
+      [batch_size, seq_length(?), units] output sequence
+
+    """
+    current = inputs
+
+    _, seq_len, seq_depth = current.shape
+
+    # dense
+    current = tf.keras.layers.Dense(
+        units=units,
+        use_bias=True,
+        activation='linear',
+        kernel_initializer=kernel_initializer,
+        kernel_regularizer=tf.keras.regularizers.l1_l2(l1_scale, l2_scale),
+    )(current)
+    
+    current_4 = tf.keras.layers.Lambda(lambda x: tf.keras.activations.softmax(x[..., :4], axis=-1), output_shape=(seq_len, 4))(current)
+    current_2 = tf.keras.layers.Lambda(lambda x: tf.keras.activations.softmax(x[..., 4:], axis=-1), output_shape=(seq_len, 2))(current)
+    
+    current = tf.keras.layers.Lambda(lambda x: tf.concat([x[0], x[1]], axis=-1), output_shape=(seq_len, 6))([current_4, current_2])
+
+    return current
+
+
 ############################################################
 # Dictionary
 ############################################################
@@ -1978,6 +2020,7 @@ name_func = {
     "dilated_dense": dilated_dense,
     "factor_inverse": factor_inverse,
     "final": final,
+    "final_4_2": final_4_2,
     "global_context": global_context,
     "one_to_two": one_to_two,
     "symmetrize_2d": symmetrize_2d,
