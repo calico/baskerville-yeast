@@ -926,12 +926,38 @@ class EnsembleReverseComplement(tf.keras.layers.Layer):
 
         ens_seqs_1hot = []
         for seq_1hot in seqs_1hot:
-            rc_seq_1hot = tf.gather(seq_1hot, [3, 2, 1, 0], axis=-1)
-            rc_seq_1hot = tf.reverse(rc_seq_1hot, axis=[1])
+
+            # Reverse complement only the first four dimensions
+            first_four = seq_1hot[..., :4]  # Extract the first four dimensions
+            other_dims = seq_1hot[..., 4:]  # Extract remaining dimensions
+
+            # Complement and reverse only the first four dimensions
+            rc_first_four = tf.gather(first_four, [3, 2, 1, 0], axis=-1)
+            rc_first_four = tf.reverse(rc_first_four, axis=[1])
+
+            # Concatenate the reverse complement of first four with unchanged other dimensions
+            rc_seq_1hot = tf.concat([rc_first_four, other_dims], axis=-1)
+            
+            print("1 first_four: ", first_four.shape)
+            print("2 other_dims: ", other_dims.shape)
+            print("2 rc_first_four: ", rc_first_four.shape)
+            print("3 seq_1hot: ", seq_1hot.shape)
+            print("3 rc_seq_1hot: ", rc_seq_1hot.shape)
+
+            # # rc_seq_1hot = tf.gather(seq_1hot, [3, 2, 1, 0], axis=-1)
+            # # rc_seq_1hot = tf.reverse(rc_seq_1hot, axis=[1])
+            # print("1 seq_1hot: ", seq_1hot)
+            # print("1 seq_1hot: ", seq_1hot.shape)
+            # print("2 rc_seq_1hot: ", rc_seq_1hot)
+            # print("2 rc_seq_1hot: ", rc_seq_1hot.shape)
+            # print("3 rc_seq_1hot: ", rc_seq_1hot)
+            # print("3 rc_seq_1hot: ", rc_seq_1hot.shape)
+
             ens_seqs_1hot += [
                 (seq_1hot, tf.constant(False)),
                 (rc_seq_1hot, tf.constant(True)),
             ]
+            print("ens_seqs_1hot: ", ens_seqs_1hot)
 
         return ens_seqs_1hot
 

@@ -636,7 +636,7 @@ class Trainer:
                         # Use TensorFlow indexing to set the desired column to 1
                         x_new = tf.tensor_scatter_nd_update(
                             x_new,
-                            indices=tf.constant([[i, j, 114] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
+                            indices=tf.constant([[i, j, 5+params_train['r64_idx']] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
                             updates=tf.ones((x_new.shape[0] * x_new.shape[1],))
                         )
                         x = x_new
@@ -663,7 +663,7 @@ class Trainer:
                         # Use TensorFlow indexing to set the desired column to 1
                         x_new = tf.tensor_scatter_nd_update(
                             x_new,
-                            indices=tf.constant([[i, j, 114] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
+                            indices=tf.constant([[i, j, 5+params_train['r64_idx']] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
                             updates=tf.ones((x_new.shape[0] * x_new.shape[1],))
                         )
                         x = x_new

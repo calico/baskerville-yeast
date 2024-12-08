@@ -66,9 +66,17 @@ def main():
         help="Use mixed float16 precision [Default: %default]",
     )
     parser.add_option(
+        "--indel_stitch",
+        dest="indel_stitch",
+        default=False,
+        action="store_true",
+        help="Stitch indel compensation shifts [Default: %default]",
+    )
+    parser.add_option(
         "-g",
         dest="genes_gtf",
-        default="%s/genes/gencode41/gencode41_basic_nort.gtf" % os.environ["HG38"],
+        # default="%s/genes/gencode41/gencode41_basic_nort.gtf" % os.environ["HG38"],
+        default=None,
         help="GTF for gene definition [Default %default]",
     )
     parser.add_option(
@@ -212,6 +220,7 @@ def main():
 
     options.shifts = [int(shift) for shift in options.shifts.split(",")]
     options.snp_stats = options.snp_stats.split(",")
+    print("options.snp_stats: ", options.snp_stats)
     if options.targets_file is None:
         parser.error("Must provide targets file")
 
@@ -247,6 +256,7 @@ def main():
 
     #################################################################
     # calculate SAD scores:
+    print("options.processes: ", options.processes)
     if options.processes is not None:
         score_gene_snps(params_file, model_file, vcf_file, worker_index, options)
     else:

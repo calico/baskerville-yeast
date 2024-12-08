@@ -155,8 +155,8 @@ def main():
     for x_ix, x_tuple in enumerate(eval_data.dataset) :
         # print(f'df.iloc[{x_ix}]', df.iloc[x_ix])
         # print(f'df.iloc[{x_ix}]["species"]', df.iloc[x_ix]["species"])
-        if df.iloc[x_ix]["species"] != "GCA_000146045_2":
-            continue
+        # if df.iloc[x_ix]["species"] != "GCA_000146045_2":
+        #     continue
         if x_ix % 64 == 0 :
             print('Evaluating sequence pattern = ' + str(x_ix), flush=True)
         

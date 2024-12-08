@@ -62,6 +62,7 @@ class SeqDataset:
         seq_length_crop: int = 0,
         mode: str = "eval",
         tfr_pattern: str = None,
+        tfr_root_dir: str = "tfrecords",
         targets_slice_file: str = None,
         shuffle_records: bool = False,
         has_targets: bool = True,
@@ -78,6 +79,7 @@ class SeqDataset:
         self.seq_length_crop = seq_length_crop
         self.mode = mode
         self.tfr_pattern = tfr_pattern
+        self.tfr_root_dir = tfr_root_dir
         self.shuffle_records = shuffle_records
         self.has_targets = has_targets
         self.has_label = has_label
@@ -92,6 +94,7 @@ class SeqDataset:
         print("self.seq_length_crop: ", self.seq_length_crop)
         print("self.mode: ", self.mode) 
         print("self.tfr_pattern: ", self.tfr_pattern)
+        print("self.tfr_root_dir: ", self.tfr_root_dir)
         print("self.shuffle_records: ", self.shuffle_records)
         print("self.has_targets: ", self.has_targets)
         print("self.has_label: ", self.has_label)
@@ -133,11 +136,12 @@ class SeqDataset:
         else:
             # extract or compute sequence statistics
             if self.tfr_pattern is None:
-                self.tfr_path = "%s/tfrecords/%s-*.tfr" % (self.data_dir, self.split_label)
+                self.tfr_path = "%s/%s/%s-*.tfr" % (self.data_dir, self.tfr_root_dir, self.split_label)
                 self.num_seqs = data_stats["%s_seqs" % self.split_label]
             else:
-                self.tfr_path = "%s/tfrecords/%s" % (self.data_dir, self.tfr_pattern)
+                self.tfr_path = "%s/%s/%s" % (self.data_dir, self.tfr_root_dir, self.tfr_pattern)
                 self.compute_stats()
+        print("self.tfr_path: ", self.tfr_path)
         # make tf.data.Dataset object
         self.make_dataset()
 

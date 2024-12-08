@@ -563,6 +563,7 @@ def vcf_snps(
         prev_chr = None
         prev_pos = -1
 
+    print("validate_ref_fasta: ", validate_ref_fasta)
     # to check reference
     if validate_ref_fasta is not None:
         genome_open = pysam.Fastafile(validate_ref_fasta)
@@ -596,7 +597,6 @@ def vcf_snps(
                 seen_chrs.add(snps[-1].chr)
                 prev_chr = snps[-1].chr
                 prev_pos = snps[-1].pos
-
             if validate_ref_fasta is not None:
                 ref_n = len(snps[-1].ref_allele)
                 snp_pos = snps[-1].pos - 1

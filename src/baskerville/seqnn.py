@@ -249,8 +249,11 @@ class SeqNN:
         if ensemble_rc or shift_bool:
             # sequence input
             sequence = tf.keras.Input(shape=(self.seq_length, self.num_features), name="sequence")
+            print("* sequence.shape: ", sequence.shape)
             sequences = [sequence]
 
+            print("shift_bool: ", shift_bool)
+            print("ensemble_rc: ", ensemble_rc)
             if shift_bool:
                 # generate shifted sequences
                 sequences = layers.EnsembleShift(ensemble_shifts)(sequences)
@@ -260,6 +263,11 @@ class SeqNN:
                 sequences_rev = layers.EnsembleReverseComplement()(sequences)
             else:
                 sequences_rev = [(seq, tf.constant(False)) for seq in sequences]
+
+            # print("sequences_rev: ", sequences_rev)
+            # for (seq, rp) in sequences_rev:
+            #     print("* seq.shape: ", seq.shape)
+            #     print("* rp.shape: ", rp.shape)
 
             if len(self.strand_pair) == 0:
                 strand_pair = None

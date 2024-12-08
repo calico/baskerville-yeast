@@ -91,6 +91,75 @@ def dna_1hot(
     return seq_code
 
 
+def dna_1hot_mask_species_encoding(
+    seq: str, seq_len: int = None, n_uniform: bool = False, n_sample: bool = False,
+    num_species: int = None,
+    species_index: int = None
+):
+    """Convert a DNA sequence to a 1-hot encoding.
+
+    Args:
+      seq (str): DNA sequence.
+      seq_len (int): length to extend/trim sequences to.
+      n_uniform (bool): represent N's as 0.25, forcing float16,
+      n_sample (bool):  sample ACGT for N
+
+    Returns:
+      seq_code (np.array): 1-hot encoding of DNA sequence.
+    """
+    print("** In dna_1hot_mask_species_encoding: ", seq_len, "n_uniform: ", n_uniform, "n_sample: ", n_sample, "num_species: ", num_species, "species_index: ", species_index)
+    if seq_len is None:
+        seq_len = len(seq)
+        seq_start = 0
+    else:
+        if seq_len <= len(seq):
+            # trim the sequence
+            seq_trim = (len(seq) - seq_len) // 2
+            seq = seq[seq_trim : seq_trim + seq_len]
+            seq_start = 0
+        else:
+            seq_start = (seq_len - len(seq)) // 2
+
+    seq = seq.upper()
+
+    # map nt's to a matrix len(seq)x4 of 0's and 1's.
+    if n_uniform:
+        seq_code = np.zeros((seq_len, 4), dtype="float16")
+    else:
+        seq_code = np.zeros((seq_len, 4), dtype="bool")
+
+    for i in range(seq_len):
+        if i >= seq_start and i - seq_start < len(seq):
+            nt = seq[i - seq_start]
+            if nt == "A":
+                seq_code[i, 0] = 1
+            elif nt == "C":
+                seq_code[i, 1] = 1
+            elif nt == "G":
+                seq_code[i, 2] = 1
+            elif nt == "T":
+                seq_code[i, 3] = 1
+            else:
+                if n_uniform:
+                    seq_code[i, :] = 0.25
+                elif n_sample:
+                    ni = random.randint(0, 3)
+                    seq_code[i, ni] = 1
+
+    print("* seq_code: ", seq_code.shape)
+    # Expand the one-hot encoding to include species channels if specified
+    if num_species is not None and species_index is not None:
+        # Create an expanded array with additional species channels
+        new_seq_code = np.zeros((seq_len, 4 + 1 + num_species), dtype=seq_code.dtype)
+        # Copy nucleotide encoding
+        new_seq_code[:, :4] = seq_code
+        # Set the species channel to 1
+        print("\tSpecies indices: ", 4 + 1 + species_index)
+        new_seq_code[:, 4 + 1 + species_index] = 1
+        seq_code = new_seq_code
+    return seq_code
+
+
 def dna_1hot_index(seq: str, n_sample: bool = False):
     """Convert a DNA sequence to an index encoding.
 
