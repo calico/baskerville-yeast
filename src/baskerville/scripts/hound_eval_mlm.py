@@ -83,6 +83,13 @@ def main():
         default=None,
         help="The directory to the validation data_dir/tfrecords [Default: %(default)s]",
     )
+    parser.add_argument(
+        "--diff-species-encoding",
+        default=False,
+        action="store_true",
+        help="Use different species encoding [Default: %(default)s]",
+    )
+
 
     parser.add_argument("params_file", help="JSON file with model parameters")
     parser.add_argument("model_file", help="Trained model HDF5.")
@@ -111,12 +118,15 @@ def main():
         data_stats = json.load(data_stats_open)
     num_species = data_stats.get("num_species", 1)
 
+    print("num_species: ", num_species)
+
     # set number of input features
     params_model["num_features"] = 4
     if params_train["loss"] == 'mlm':
         params_model["num_features"] = num_species + 5
 
     print("params_train: ", params_train)
+    print("params_model: ", params_model)
 
     # construct eval data
     eval_data = dataset.SeqDataset(
@@ -173,6 +183,11 @@ def main():
         # get as numpy arrays
         x = x.numpy()
         label = label.numpy()
+
+        # Make labels all zero because all species are not used for LM training
+        if args.diff_species_encoding:
+            label = np.zeros_like(label)
+        
         if eval_data.has_mask :
             exon_mask = exon_mask.numpy()
         if eval_data.has_repeat_mask :
@@ -294,6 +309,7 @@ def main():
             x_true=x_true,
             x_pred=x_pred,
             label=label,
+            weight_scale=weight_scale
         )
     
     # finally compute test loss (categorical cross-entropy) per species
