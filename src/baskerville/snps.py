@@ -603,6 +603,9 @@ def compute_scores(ref_preds, alt_preds, snp_stats, strand_transform=None):
     """
     num_shifts, seq_length, num_targets = ref_preds.shape
 
+    print("* ref_preds.shape: ", ref_preds.shape)
+    print("* alt_preds.shape: ", alt_preds.shape)
+
     # log/sqrt
     ref_preds_log = np.log2(ref_preds + 1)
     alt_preds_log = np.log2(alt_preds + 1)

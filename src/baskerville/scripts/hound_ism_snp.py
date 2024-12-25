@@ -207,6 +207,9 @@ def main():
         # 1-hot encode reference
         ref_1hot = np.expand_dims(seqs_1hot[si], axis=0)
 
+        print("mut_start: ", mut_start, "; mut_end: ", mut_end)
+        print("ref_1hot[0, mut_start:mut_end].astype('bool'): ", ref_1hot[0, mut_start:mut_end].astype("bool"))
+
         # save sequence
         scores_h5["seqs"][si] = ref_1hot[0, mut_start:mut_end].astype("bool")
 

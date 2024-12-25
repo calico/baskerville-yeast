@@ -141,6 +141,13 @@ def main():
     with open(params_file) as params_open:
         params = json.load(params_open)
     params_model = params["model"]
+    params_train = params["train"]
+    print("* Before params_model: ", params_model)
+    if params_train["task"] == "fine-tune":
+        num_species = 165
+        params_model["num_features"] = num_species + 5
+        params_train['r64_idx'] = 109
+    print("* After params_model: ", params_model)
 
     # read targets
     if options.targets_file is None:
@@ -195,7 +202,7 @@ def main():
     if os.path.isfile(scores_h5_file):
         os.remove(scores_h5_file)
     scores_h5 = h5py.File(scores_h5_file, "w")
-    scores_h5.create_dataset("seqs", dtype="bool", shape=(num_seqs, options.mut_len, 4))
+    scores_h5.create_dataset("seqs", dtype="bool", shape=(num_seqs, options.mut_len, params_model["num_features"]))
     for snp_stat in options.snp_stats:
         scores_h5.create_dataset(
             snp_stat, dtype="float16", shape=(num_seqs, options.mut_len, 4, num_targets)
@@ -230,8 +237,12 @@ def main():
         print("Predicting %d" % si, flush=True)
 
         # 1 hot code DNA
-        ref_1hot = dna.dna_1hot(seq_dna)
+        ref_1hot = dna.dna_1hot_mask_species_encoding(seq_dna, num_species=num_species, species_index=params_train['r64_idx'])
         ref_1hot = np.expand_dims(ref_1hot, axis=0)
+        print("mut_start: ", mut_start, "; mut_end: ", mut_end)
+        print("ref_1hot[0, mut_start:mut_end]: ", ref_1hot[0, mut_start:mut_end].shape)
+
+        print("ref_1hot: ", ref_1hot.shape)
 
         # save sequence
         scores_h5["seqs"][si] = ref_1hot[0, mut_start:mut_end].astype("bool")
@@ -279,6 +290,8 @@ def main():
                         ref_preds, alt_preds, options.snp_stats, None
                     )
                     for snp_stat in options.snp_stats:
+                        print("snp_stat: ", snp_stat, ism_scores[snp_stat].shape)
+                        print("snp_stat", snp_stat, "; si", si, "; mi", mi, "; ni", ni)
                         scores_h5[snp_stat][si, mi - mut_start, ni] = ism_scores[
                             snp_stat
                         ]
