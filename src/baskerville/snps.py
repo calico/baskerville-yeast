@@ -38,10 +38,7 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
     with open(params_file) as params_open:
         params = json.load(params_open)
     params_model = params["model"]
-    params_train = params["train"]
-
-    print("* Before params_model: ", params_model)
-    
+    params_train = params["train"]    
     # read data parameters (data 0)
     # data_stats_file = "%s/statistics.json" % args.data_dirs[0]
     # with open(data_stats_file) as data_stats_open:
@@ -51,9 +48,6 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
         num_species = 165
         params_model["num_features"] = num_species + 5
         params_train['r64_idx'] = 109
-
-    print("* After params_model: ", params_model)
-
     # read targets
     if options.targets_file is None:
         print("Must provide targets file to clarify stranded datasets", file=sys.stderr)
@@ -96,7 +90,6 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
         seqnn_model.build_ensemble(options.rc)
         input_shape = seqnn_model.model.input_shape
         # # Update input shape to include species channels
-        # input_shape = (input_shape[1], input_shape[2], num_species)
 
     # make dummy predictions to warm up model
     dummy_input_shape = (1,) + input_shape[1:]
@@ -177,6 +170,7 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
     else:
         untransform = dataset.untransform_preds
 
+    # SNP index
     # SNP index
     si = 0
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -339,10 +333,6 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
         seqnn_model.build_slice(targets_df.index)
         seqnn_model.build_ensemble(options.rc)
         input_shape = seqnn_model.model.input_shape
-        print("* Before input_shape: ", input_shape)
-        # # Update input shape to include species channels
-        # input_shape = (input_shape[1], input_shape[2], num_species)
-        # print("* After input_shape: ", input_shape)
 
     # make dummy predictions to warm up model
     dummy_input_shape = (1,) + input_shape[1:]
@@ -378,6 +368,8 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
         start_i=start_i,
         end_i=end_i,
     )
+    print("* snps: ", len(snps))
+    print("* snps[0]: ", snps[0])
 
     # read genes
     transcriptome = Transcriptome(options.genes_gtf)
@@ -386,6 +378,7 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
     genesnp_clusters = cluster_genes(
         transcriptome, params_model["seq_length"], options.cluster_pct
     )
+    print("* genesnp_clusters: ", len(genesnp_clusters))
 
     # delimit sequence boundaries
     [gsc.delimit(params_model["seq_length"], model_crop) for gsc in genesnp_clusters]
@@ -428,17 +421,17 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for gsc in tqdm(genesnp_clusters):
-            print("** gsc: ", gsc.genes)
+            print("** (in score_gene_snps) gsc: ", gsc.genes)
             snp_1hot_list = gsc.get_1hots(genome_open, num_species=num_species, species_index=params_train['r64_idx'])
-            print("* snp_1hot_list: ", snp_1hot_list[0].shape)
+            print("* (in score_gene_snps) snp_1hot_list: ", snp_1hot_list[0].shape)
             ref_1hot = np.expand_dims(snp_1hot_list[0], axis=0)
-            print("* ref_1hot: ", ref_1hot.shape)
+            print("* (in score_gene_snps) ref_1hot: ", ref_1hot.shape)
             # predict reference
             ref_preds = []
             for shift in options.shifts:
                 ref_1hot_shift = dna.hot1_augment(ref_1hot, shift=shift)
                 ref_preds_shift = seqnn_model(ref_1hot_shift)[0]
-                print("ref_preds_shift.shape: ", ref_preds_shift.shape)   
+                print("*  (in score_gene_snps) ref_preds_shift.shape: ", ref_preds_shift.shape)   
                 # untransform predictions
                 if options.targets_file is None:
                     ref_preds.append(ref_preds_shift)
@@ -521,7 +514,6 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
                             gene.kv["gene_id"],
                             gsc.snps[ai].rsid,
                         )
-
     # close open files
     genome_open.close()
     scores_out.close()
@@ -1008,10 +1000,10 @@ class SNPCluster:
             ref_n = len(snp.ref_allele)
             snp_pos = snp.pos - 1 - self.start
             ref_snp = ref_seq[snp_pos : snp_pos + ref_n]
-            print("\tsnp: ", snp)
-            print("\tref_n: ", ref_n)
-            print("\tsnp_pos: ", snp_pos)
-            print("\tref_snp: ", ref_snp)
+            print("\t(get_1hots) snp: ", snp)
+            print("\t(get_1hots) ref_n: ", ref_n)
+            print("\t(get_1hots) snp_pos: ", snp_pos)
+            print("\t(get_1hots) ref_snp: ", ref_snp)
             if snp.ref_allele != ref_snp:
                 print(
                     "ERROR: %s does not match reference %s" % (snp, ref_snp),
@@ -1021,21 +1013,21 @@ class SNPCluster:
 
         # 1 hot code reference sequence
         ref_1hot = dna.dna_1hot_mask_species_encoding(ref_seq, num_species=num_species, species_index=species_index)
-        print("* ref_1hot.shape: ", ref_1hot.shape)
+        print("\t(get_1hots) * ref_1hot.shape: ", ref_1hot.shape)
         seqs1_list = [ref_1hot]
 
         # make alternative 1 hot coded sequences
         # (assuming SNP is 1-based indexed)
-        print("* make alternative 1 hot coded sequences: ")
+        print("(get_1hots) * make alternative 1 hot coded sequences: ")
         for snp in self.snps:
             snp_pos = snp.pos - 1 - self.start
-            print("\tsnp: ", snp)
-            print("\tsnp_pos: ", snp_pos)
-            print("\tsnp.alt_alleles[0]: ", snp.alt_alleles[0])
+            print("\t(get_1hots) snp: ", snp)
+            print("\t(get_1hots) snp_pos: ", snp_pos)
+            print("\t(get_1hots) snp.alt_alleles[0]: ", snp.alt_alleles[0])
             alt_1hot = make_alt_1hot(
                 ref_1hot, snp_pos, snp.ref_allele, snp.alt_alleles[0]
             )
-            print("* alt_1hot.shape: ", alt_1hot.shape)
+            print("\t(get_1hots) * alt_1hot.shape: ", alt_1hot.shape)
             seqs1_list.append(alt_1hot)
 
         return seqs1_list

@@ -938,11 +938,11 @@ class EnsembleReverseComplement(tf.keras.layers.Layer):
             # Concatenate the reverse complement of first four with unchanged other dimensions
             rc_seq_1hot = tf.concat([rc_first_four, other_dims], axis=-1)
             
-            print("1 first_four: ", first_four.shape)
-            print("2 other_dims: ", other_dims.shape)
-            print("2 rc_first_four: ", rc_first_four.shape)
-            print("3 seq_1hot: ", seq_1hot.shape)
-            print("3 rc_seq_1hot: ", rc_seq_1hot.shape)
+            # print("1 first_four: ", first_four.shape)
+            # print("2 other_dims: ", other_dims.shape)
+            # print("2 rc_first_four: ", rc_first_four.shape)
+            # print("3 seq_1hot: ", seq_1hot.shape)
+            # print("3 rc_seq_1hot: ", rc_seq_1hot.shape)
 
             # # rc_seq_1hot = tf.gather(seq_1hot, [3, 2, 1, 0], axis=-1)
             # # rc_seq_1hot = tf.reverse(rc_seq_1hot, axis=[1])
@@ -957,8 +957,7 @@ class EnsembleReverseComplement(tf.keras.layers.Layer):
                 (seq_1hot, tf.constant(False)),
                 (rc_seq_1hot, tf.constant(True)),
             ]
-            print("ens_seqs_1hot: ", ens_seqs_1hot)
-
+            # print("ens_seqs_1hot: ", ens_seqs_1hot)
         return ens_seqs_1hot
 
 
