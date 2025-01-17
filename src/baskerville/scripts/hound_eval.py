@@ -127,6 +127,15 @@ def main():
     params_model = params["model"]
     params_train = params["train"]
 
+    num_species = 1
+    # Get the number of species
+    if params_train["task"] == "fine-tune":
+        num_species = 165
+    if params_train["task"] == "fine-tune":
+        params_model["num_features"] = num_species + 5
+        params_train['r64_idx'] = 109
+    print("num_species: ", num_species)
+
     # set strand pairs
     if "strand_pair" in targets_df.columns:
         params_model["strand_pair"] = [np.array(targets_df.strand_pair)]
@@ -152,9 +161,15 @@ def main():
     loss_fn = trainer.parse_loss(loss_label, spec_weight=spec_weight)
 
     # evaluate
-    test_loss, test_metric1, test_metric2 = seqnn_model.evaluate(
-        eval_data, loss_label=loss_label, loss_fn=loss_fn
-    )
+    if params_train["task"] == "fine-tune":
+        test_loss, test_metric1, test_metric2 = seqnn_model.evaluate_lm_fine_tuned(
+            eval_data, params_train=params_train, num_species=num_species, loss_label=loss_label, loss_fn=loss_fn
+        )
+    else:
+        test_loss, test_metric1, test_metric2 = seqnn_model.evaluate(
+            eval_data, loss_label=loss_label, loss_fn=loss_fn
+        )
+
 
     # print summary statistics
     print("\nTest Loss:         %7.5f" % test_loss)
