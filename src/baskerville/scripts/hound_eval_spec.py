@@ -163,6 +163,15 @@ def main():
     params_model = params["model"]
     params_train = params["train"]
 
+    num_species = 1
+    # Get the number of species
+    if params_train["task"] == "fine-tune":
+        num_species = 165
+    if params_train["task"] == "fine-tune":
+        params_model["num_features"] = num_species + 5
+        params_train['r64_idx'] = 109
+    print("num_species: ", num_species)
+
     # set strand pairs
     if "strand_pair" in targets_df.columns:
         params_model["strand_pair"] = [np.array(targets_df.strand_pair)]
@@ -195,6 +204,22 @@ def main():
 
     si = 0
     for x, y in tqdm(eval_data.dataset):
+        if params_train["task"] == "fine-tune":
+            # !!!Change the dimension of the X for fine-tuning
+            # Create a new tensor filled with zeros of the desired shape
+            new_shape = x.shape[:-1] + (num_species+1,)
+            # Copy the original tensor into the first 4 positions
+            x_new = tf.concat([
+                x, 
+                tf.zeros(new_shape)
+            ], axis=-1)
+            # Use TensorFlow indexing to set the desired column to 1
+            x_new = tf.tensor_scatter_nd_update(
+                x_new,
+                indices=tf.constant([[i, j, 5+params_train['r64_idx']] for i in range(x_new.shape[0]) for j in range(x_new.shape[1])]),
+                updates=tf.ones((x_new.shape[0] * x_new.shape[1],))
+            )
+            x = x_new
         # predict
         yh = seqnn_model(x)
         eval_preds.append(yh)
