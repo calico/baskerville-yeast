@@ -172,9 +172,6 @@ def main():
     params_model["strand_pair"] = strand_pairs
     params_model["num_features"] = 4
     # Language model implementation. One-hot encoding DNA + mask encoding + species one-hot encoding
-    if params_train["loss"] == 'mlm':
-        params_model["num_features"] = num_species + 5
-
     # Fine-tuning language model implementation. One-hot encoding DNA + mask encoding + species one-hot encoding
     if params_train["task"] == "fine-tune":
         params_model["num_features"] = num_species + 5
