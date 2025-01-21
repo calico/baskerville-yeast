@@ -19,6 +19,7 @@ import json
 import os
 import time
 import re
+import shutil  # <-- for copying the bed file directly
 
 from intervaltree import IntervalTree
 import numpy as np
@@ -40,12 +41,37 @@ borzoi_test_genes.py
 Measure accuracy at gene-level.
 """
 
+def parse_group(desc: str) -> str:
+    # Adjust these checks as needed
+    if "Chip-exo" in desc:
+        return "Chip-exo"
+    elif "Chip-MNase" in desc:
+        return "Chip-MNase"
+    elif "RNAseq" in desc:
+        return "RNAseq"
+    else:
+        return "Other"
+
 ################################################################################
 # main
 ################################################################################
 def main():
     usage = "usage: %prog [options] <params_file> <model_file> <data_dir> <genes_gtf>"
     parser = OptionParser(usage)
+    parser.add_option(
+        "-f",
+        "--file_type",
+        dest="file_type",
+        default="gtf",
+        type="str",
+        help="Input file type: 'gtf' or 'bed' [Default: %default]",
+    )
+    parser.add_option(
+        "--dataset_type",
+        dest="dataset_type",
+        default=None,
+        help="Group of dataset to evaluate: 'Chip-exo', 'Chip-MNase', or 'RNAseq'. [Default: evaluate all]",
+    )
     parser.add_option(
         "--head",
         dest="head_i",
@@ -152,13 +178,13 @@ def main():
         params_file = args[0]
         model_file = args[1]
         data_dir = args[2]
-        genes_gtf_file = args[3]
+        genes_file = args[3]
 
     print("Options: ")
     print("  Params: %s" % params_file)
     print("  Model: %s" % model_file)
     print("  Data: %s" % data_dir)
-    print("  Genes: %s" % genes_gtf_file)
+    print("  Genes: %s" % genes_file)
 
     if not os.path.isdir(options.out_dir):
         os.mkdir(options.out_dir)
@@ -176,8 +202,31 @@ def main():
     print("Targets file:", options.targets_file)
     print("Statistics file:", options.statistics)
     targets_df = pd.read_csv(options.targets_file, index_col=0, sep="\t")
-    print("Targets:", targets_df.shape)
+    # Add a 'group' column based on the description
+    targets_df["group"] = targets_df["description"].apply(parse_group)
+
+    print("Targets file read. All targets:", targets_df.shape[0], "entries")
     print(targets_df)
+    print("Targets:", targets_df.shape)
+    # print("Chip-exo: ", len(targets_df.loc[targets_df['group'] == "Chip-exo"]))
+    # print("Chip-MNase: ", len(targets_df.loc[targets_df['group'] == "Chip-MNase"]))
+    # print("RNAseq: ", len(targets_df.loc[targets_df['group'] == "RNAseq"]))
+
+    # Filter out the tracks that I want to evaluate.
+    # If dataset_type is specified, filter to that group.
+    if options.dataset_type is not None:
+        old_count = targets_df.shape[0]
+        targets_df = targets_df[targets_df["group"] == options.dataset_type]
+        new_count = targets_df.shape[0]
+        print(f"Filtering for {options.dataset_type}: {old_count} -> {new_count} entries")
+
+    # If after filtering, targets_df is empty, we can check that and optionally quit:
+    if targets_df.shape[0] == 0:
+        print(f"No targets found matching dataset_type='{options.dataset_type}'. Exiting.")
+        return
+    
+    # print("Selected Targets:", targets_df)
+
 
     # read model parameters
     with open(params_file) as params_open:
@@ -205,8 +254,6 @@ def main():
     print("Targets strand:", targets_strand_df.shape)   
     print(targets_strand_df)
 
-
-
     # # set strand pairs (using new indexing)
     # orig_new_index = dict(zip(targets_df.index, np.arange(targets_df.shape[0])))
     # targets_strand_pair = np.array(
@@ -232,8 +279,8 @@ def main():
     if params_train["task"] == "fine-tune":
         params_model["num_features"] = num_species + 5
     
-    print("params_model[num_features]: ", params_model["num_features"])
-    print("load model_file: ", model_file)
+    # print("params_model[num_features]: ", params_model["num_features"])
+    # print("load model_file: ", model_file)
 
     # initialize model
     seqnn_model = seqnn.SeqNN(params_model)
@@ -256,7 +303,6 @@ def main():
     # Remove "chr" from the Chromosome column
     seqs_df['Chromosome'] = seqs_df['Chromosome'].str.replace('chr', '', regex=False)
     seqs_pr = pr.PyRanges(seqs_df)
-    print("seqs_pr: ", seqs_pr)
 
 
     #######################################################
@@ -265,11 +311,18 @@ def main():
     t0 = time.time()
     print("Making gene BED...", end="")
     genes_bed_file = "%s/genes.bed" % options.out_dir
-    if options.span:
-        make_genes_span(genes_bed_file, genes_gtf_file, options.out_dir)
+    
+    if options.file_type.lower() == "gtf":
+        # Use the GTF to build a gene BED
+        if options.span:
+            make_genes_span(genes_bed_file, genes_file, options.out_dir)
+        else:
+            make_genes_exon(genes_bed_file, genes_file, options.out_dir)
+    elif options.file_type.lower() == "bed":
+        # The user has already provided a BED. Just copy it over.
+        shutil.copyfile(genes_file, genes_bed_file)
     else:
-        make_genes_exon(genes_bed_file, genes_gtf_file, options.out_dir)
-
+        raise ValueError("Invalid file type. Must be 'gtf' or 'bed'.")
     genes_pr = pr.read_bed(genes_bed_file)
     print("genes_pr: ", genes_pr)
     print("DONE in %ds" % (time.time() - t0))
@@ -300,9 +353,8 @@ def main():
     gene_targets_dict = {}
 
     si = 0
-    print("eval_data.dataset: ", eval_data.dataset)
     for x, y in eval_data.dataset:
-        print("x.shape, y.shape: ", x.shape, y.shape)
+        # print("x.shape, y.shape: ", x.shape, y.shape)
 
         if params_train["task"] == "fine-tune":
             # !!!Change the dimension of the X for fine-tuning
@@ -321,7 +373,7 @@ def main():
             )
             x = x_new
 
-        print("new x.shape, y.shape: ", x.shape, y.shape)
+        # print("new x.shape, y.shape: ", x.shape, y.shape)
 
         # predict only if gene overlaps
         yh = None
@@ -356,6 +408,7 @@ def main():
                 # predict
                 if yh is None:
                     yh = seqnn_model(x)
+                    print("yh: ", yh.shape)
 
                 # slice gene region
                 yhb = yh[bsi, bin_start:bin_end].astype("float16")
