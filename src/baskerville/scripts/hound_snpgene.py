@@ -207,6 +207,12 @@ def main():
     else:
         parser.error("Must provide parameters and model files and QTL VCF file")
 
+    print("params_file: ", params_file) 
+    print("model_file: ", model_file)
+    print("vcf_file: ", vcf_file)
+    print("options.out_dir: ", options.out_dir)
+
+
     # check if the model type is correct
     if options.tensorrt:
         if model_file.endswith(".h5"):
@@ -224,6 +230,19 @@ def main():
     if options.targets_file is None:
         parser.error("Must provide targets file")
 
+    print("* options.targets_file: ", options.targets_file)
+    print("* options.shifts: ", options.shifts)
+    print("* options.snp_stats: ", options.snp_stats)
+    print("* options.out_dir: ", options.out_dir)
+    print("* options.rc: ", options.rc)
+    print("* options.span: ", options.span)
+    print("* options.cluster_pct: ", options.cluster_pct)
+    print("* options.indel_stitch: ", options.indel_stitch)
+    print("* options.untransform_old: ", options.untransform_old)
+    print("* options.genes_gtf: ", options.genes_gtf)
+    print("* options.tensorrt: ", options.tensorrt)
+    print("* is_dir_model: ", is_dir_model)
+    
     #################################################################
     # check if the program is run on GPU, else quit
     physical_devices = tf.config.list_physical_devices()
