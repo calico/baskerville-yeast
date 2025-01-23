@@ -667,25 +667,53 @@ class SNP:
     """
 
     def __init__(self, vcf_line, pos2=False):
-        a = vcf_line.split()
-        # self.chr = a[0]
-        if a[0].startswith("chr"):
-            self.chr = a[0]
-        else:
-            self.chr = "chr%s" % a[0]
-        self.pos = int(a[1])
-        self.rsid = a[2]
-        self.ref_allele = a[3]
-        self.alt_alleles = a[4].split(",")
-        self.alt_allele = self.alt_alleles[0]
+        # Split the line by tabs; standard VCF columns are:
+        # [0]CHROM, [1]POS, [2]ID, [3]REF, [4]ALT, [5]QUAL, [6]FILTER, [7]INFO, ...
+        columns = vcf_line.strip().split('\t')
+        
+        # Some VCFs might have fewer than 8 columns if they're malformed,
+        # so be sure to check or handle errors accordingly.
+        if len(columns) < 8:
+            raise ValueError(f"Invalid VCF line (fewer than 8 columns): {vcf_line}")
+
+        # 1) Chromosome
+        chrom = columns[0]
+        if not chrom.startswith("chr"):
+            chrom = f"chr{chrom}"
+        self.chr = chrom
+
+        # 2) Position
+        self.pos = int(columns[1])
+
+        # 3) rsid
+        self.rsid = columns[2]
+        if self.rsid == ".":
+            self.rsid = f"{self.chr}:{self.pos}"
+
+        # 4) REF
+        self.ref_allele = columns[3]
+
+        # 5) ALT (could be multiple comma-separated)
+        self.alt_alleles = columns[4].split(",")
+        self.alt_allele = self.alt_alleles[0]  # We only handle the first alt explicitly
         self.flipped = False
 
-        if self.rsid == ".":
-            self.rsid = "%s:%d" % (self.chr, self.pos)
-
+        # (Optional) POS2
         self.pos2 = None
         if pos2:
-            self.pos2 = int(a[5])
+            # some code references columns[5], but be careful if your VCF has standard fields in that column
+            # You can adapt as needed
+            self.pos2 = int(columns[5])
+
+        self.gene = None
+        if len(columns) == 8:
+            # Parse INFO field to find 'GENE=' if present
+            info_field = columns[7]
+            info_parts = info_field.split(";")
+            for kv in info_parts:
+                if kv.startswith("GENE="):
+                    self.gene = kv.split("=", 1)[1]
+                    break
 
     def flip_alleles(self):
         """Flip reference and first alt allele."""
