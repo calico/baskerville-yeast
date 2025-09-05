@@ -95,10 +95,6 @@ def main():
         "data_dirs", nargs="+", help="Train/valid/test data directorie(s)"
     )
     args = parser.parse_args()
-
-    print("1 args.restore: ", args.restore)
-    print("1 args.eval_dir: ", args.eval_dir)
-
     if args.keras_fit and len(args.data_dirs) > 1:
         print("Cannot use keras fit method with multi-genome training.")
         exit()
@@ -120,8 +116,6 @@ def main():
     num_species = data_stats.get("num_species", 1)
     if params_train["task"] == "fine-tune":
         num_species = 165
-    print("num_species: ", num_species)
-    print("params_train: ", params_train)
 
     # read datasets
     train_data = []
@@ -129,7 +123,6 @@ def main():
     strand_pairs = []
 
     for data_dir in args.data_dirs:
-        print("data_dir: ", data_dir)
         # set strand pairs 
         targets_df = pd.read_csv("%s/targets.txt" % data_dir, sep="\t", index_col=0)
         if "strand_pair" in targets_df.columns:
@@ -173,12 +166,9 @@ def main():
     params_model["num_features"] = 4
     # Language model implementation. One-hot encoding DNA + mask encoding + species one-hot encoding
     # Fine-tuning language model implementation. One-hot encoding DNA + mask encoding + species one-hot encoding
-    if params_train["task"] == "fine-tune":
+    if params_train["task"] == "fine-tune" or params_train["task"] == "self-supervised":
         params_model["num_features"] = num_species + 5
         params_train['r64_idx'] = 109
-
-    print("params_model[num_features]: ", params_model["num_features"])
-    print("args.restore: ", args.restore)
 
     if args.mixed_precision:
         mixed_precision.set_global_policy("mixed_float16")
@@ -189,9 +179,6 @@ def main():
 
         # initialize model
         seqnn_model = seqnn.SeqNN(params_model)
-
-        print("Restoring model from", args.restore, "trunk:", args.trunk)
-        print("Model summary: ", seqnn_model)
 
         # restore
         if args.restore:

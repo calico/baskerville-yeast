@@ -18,6 +18,176 @@ from baskerville import seqnn
 from baskerville import vcf as bvcf
 from baskerville.helpers.trt_optimized_model import OptimizedModel
 
+import matplotlib.pyplot as plt
+
+def plot_coverage_track_pair_bins_w_ref_zoomed(
+    y_wt, y_mut, chrom, start,
+    search_gene, center_pos, gene_start, gene_end, strand,
+    poses, track_indices, track_names, track_scales,
+    track_transforms, clip_softs, snpweight,
+    y_ground_truth=None, ref_track_indices=None,
+    log_scale=False, sqrt_scale=False, plot_mut=True,
+    plot_window=4096, normalize_window=4096,
+    bin_size=32, pad=16, rescale_tracks=True,
+    normalize_counts=False, save_figs=False,
+    save_suffix="default", save_dir="./",
+    gene_slice=None, anno_df=None, margin=100
+):
+    """
+    Zoomed coverage plotting over [min(center_pos, gene_start) - margin,
+    max(center_pos, gene_end) + margin], in binned coordinates.
+    """
+    # 1) define the zoom region in genomic coords
+    region_start = min(center_pos, gene_start) - margin
+    region_end   = max(center_pos, gene_end)   + margin
+
+    # 2) convert to bin indices (once)
+    plot_start_bin = (region_start - start) // bin_size - pad
+    plot_end_bin   = (region_end   - start) // bin_size - pad
+    center_bin     = (center_pos - start)    // bin_size - pad
+    gene_start_bin = (gene_start - start)    // bin_size - pad
+    gene_end_bin   = (gene_end   - start)    // bin_size - pad
+    mut_bin        = (poses[0]   - start)    // bin_size - pad
+
+    # 3) extract annotation bins
+    anno_bins = []
+    if anno_df is not None:
+        df = anno_df.query(
+            f"chrom=='{chrom}' and position_hg38>={region_start} and position_hg38<{region_end}"
+        )
+        anno_bins = [(pos - start)//bin_size - pad for pos in df['position_hg38'].values]
+
+    # 4) prepare mean‐across‐axes vectors (will undo transforms inside loop)
+    #    note: we keep full per‐track tensors for transform, but collapse axes now
+    wt_base = np.mean(y_wt, axis=(0,1,3))
+    mut_base = np.mean(y_mut, axis=(0,1,3))
+    gt_base = None
+    if y_ground_truth is not None:
+        gt_base = np.mean(y_ground_truth, axis=(0,1,3))
+
+    logSED = None
+
+    # 5) per‐track plotting
+    for name, idx, scale, transform, clip_soft in zip(
+        track_names, track_indices, track_scales, track_transforms, clip_softs
+    ):
+        # copy & undo transforms
+        wt = wt_base.copy().astype(np.float32)
+        mut = mut_base.copy().astype(np.float32)
+        gt  = gt_base.copy().astype(np.float32) if gt_base is not None else None
+
+        if rescale_tracks:
+            wt /= scale
+            mut /= scale
+            if gt is not None: gt /= scale
+
+            if clip_soft is not None:
+                # invert soft clipping
+                for arr in (wt, mut, gt) if gt is not None else (wt, mut):
+                    mask = arr > clip_soft
+                    unclipped = (arr - clip_soft)**2 + clip_soft
+                    arr[mask] = unclipped[mask]
+
+            # invert power/sqrt
+            wt **= (1.0/transform)
+            mut **= (1.0/transform)
+            if gt is not None: gt **= (1.0/transform)
+
+        # slice to region & optional normalization
+        wt = wt[plot_start_bin:plot_end_bin]
+        mut = mut[plot_start_bin:plot_end_bin]
+        if gt is not None:
+            gt = gt[plot_start_bin:plot_end_bin]
+
+        if normalize_counts:
+            total_wt = wt.sum()
+            total_mut = mut.sum()
+            wt /= total_wt; mut /= total_mut; wt *= total_wt; mut *= total_wt
+            if gt is not None:
+                total_gt = gt.sum()
+                gt /= total_gt; gt *= total_wt
+
+        # compute logSED if desired
+        sum_wt = wt.sum()
+        sum_mut = mut.sum()
+        logSED = np.log2(sum_mut + 1) - np.log2(sum_wt + 1)
+
+        # optional log/sqrt scaling for plotting
+        if log_scale:
+            wt = np.log2(wt + 1)
+            mut = np.log2(mut + 1)
+            if gt is not None: gt = np.log2(gt + 1)
+        elif sqrt_scale:
+            wt = np.sqrt(wt + 1)
+            mut = np.sqrt(mut + 1)
+            if gt is not None: gt = np.sqrt(gt + 1)
+
+        # determine y‐max for axis limits
+        y_max = max(wt.max(), mut.max(), gt.max() if gt is not None else 0)
+
+        # set up subplots
+        if gt is not None:
+            fig, (ax1, ax2) = plt.subplots(2,1, figsize=(16,4), sharex=True)
+        else:
+            # fig, ax1 = plt.subplots(1,1, figsize=(18,2))
+            fig, ax1 = plt.subplots(1,1, figsize=(16,1.7))
+            ax2 = None
+
+        x = np.arange(plot_start_bin, plot_end_bin)
+        # highlight SNP ± margin
+        highlight_start_bin = ((center_pos - 40) - start)//bin_size - pad
+        highlight_end_bin   = highlight_start_bin + 6        # Highlight SNP region ±margin
+        # draw shaded region behind everything
+        ax1.axvspan(
+            highlight_start_bin,
+            highlight_end_bin,
+            color='lightgrey',
+            alpha=0.5,
+            zorder=0,
+            label="±(40bp) ISM region"
+        )
+        # bars
+        ax1.bar(x, wt, width=1, alpha=0.6, label="Ref")
+        if plot_mut:
+            ax1.bar(x, mut, width=1, alpha=0.6, label="Alt")
+        if ax2 is not None:
+            ax2.bar(x, gt, width=1, alpha=0.6, label="Ground Truth")
+
+        # variant & gene lines
+        ax1.scatter([mut_bin], [0.05*y_max], s=80, marker='*', color='k', label="SNP")
+        ax1.axvline(center_bin, color='k', linestyle=':', label=f"Variant ({center_pos})")
+        start_line, end_line = (gene_start_bin, gene_end_bin) if strand=='+' else (gene_end_bin, gene_start_bin)
+        ax1.axvline(start_line, color='g', linestyle='--', label=f"{search_gene} start ({gene_start})")
+        ax1.axvline(end_line,   color='r', linestyle='-.', label=f"{search_gene} end ({gene_end})")
+
+        # annotation lines
+        for b in anno_bins:
+            ax1.axvline(b, color='cyan', linewidth=1, alpha=0.5, linestyle='-')
+
+        # labels and legend
+        ax1.set_xlim(plot_start_bin, plot_end_bin)
+        ax1.set_ylabel("Coverage")
+        ax1.set_title(f"{search_gene} {name} logSED={logSED:.3f}", fontsize=14)
+        ax1.legend(loc="upper left", bbox_to_anchor=(1.02,1), fontsize=8)
+        if ax2:
+            ax2.set_xlim(plot_start_bin, plot_end_bin)
+            ax2.set_ylabel("GT Signal")
+            ax2.set_xlabel(f"{chrom}:{region_start}-{region_end}bp")
+            ax2.legend(loc="upper left", bbox_to_anchor=(1.02,1), fontsize=8)
+        else:
+            ax1.set_xlabel(f"{chrom}:{region_start}-{region_end}bp")
+
+        plt.tight_layout()
+
+        # optional saving
+        if save_figs:
+            os.makedirs(save_dir, exist_ok=True)
+            fig.savefig(os.path.join(save_dir, f"{search_gene}_{name}_{save_suffix}.png"), dpi=300)
+            plt.close(fig)
+
+    return logSED
+
+
 
 def score_snps(params_file, model_file, vcf_file, worker_index, options):
     """
@@ -165,12 +335,11 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
         for snp_stat in options.snp_stats:
             scores_out[snp_stat][si] = scores[snp_stat]
 
-    # if options.untransform_old:
-    #     untransform = dataset.untransform_preds1
-    # else:
-    #     untransform = dataset.untransform_preds
+    if options.untransform_old:
+        untransform = dataset.untransform_preds1
+    else:
+        untransform = dataset.untransform_preds
 
-    # SNP index
     # SNP index
     si = 0
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -193,15 +362,12 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
             for shift in options.shifts:
                 ref_1hot_shift = dna.hot1_augment(ref_1hot, shift=shift)
                 ref_preds_shift = seqnn_model(ref_1hot_shift)[0]
-
-                ref_preds.append(ref_preds_shift)
-
-                # # untransform predictions
-                # if options.targets_file is None:
-                #     ref_preds.append(ref_preds_shift)
-                # else:
-                #     rpsf = executor.submit(untransform, ref_preds_shift, targets_df)
-                #     ref_preds.append(rpsf)
+                # untransform predictions
+                if options.targets_file is None:
+                    ref_preds.append(ref_preds_shift)
+                else:
+                    rpsf = executor.submit(untransform, ref_preds_shift, targets_df)
+                    ref_preds.append(rpsf)
 
             for ai, alt_1hot in enumerate(snp_1hot_list[1:]):
                 alt_1hot = np.expand_dims(alt_1hot, axis=0)
@@ -226,22 +392,19 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
                 for shift in alt_shifts:
                     alt_1hot_shift = dna.hot1_augment(alt_1hot, shift=shift)
                     alt_preds_shift = seqnn_model(alt_1hot_shift)[0]
+                    # untransform predictions
+                    if options.targets_file is None:
+                        alt_preds.append(alt_preds_shift)
+                    else:
+                        apsf = executor.submit(untransform, alt_preds_shift, targets_df)
+                        alt_preds.append(apsf)
 
-                    alt_preds.append(alt_preds_shift)
-                    
-                    # # untransform predictions
-                    # if options.targets_file is None:
-                    #     alt_preds.append(alt_preds_shift)
-                    # else:
-                    #     apsf = executor.submit(untransform, alt_preds_shift, targets_df)
-                    #     alt_preds.append(apsf)
-
-                # # result
-                # if options.targets_file is not None:
-                #     # get result, only if not already gotten
-                #     if isinstance(ref_preds[0], concurrent.futures.Future):
-                #         ref_preds = [rpsf.result() for rpsf in ref_preds]
-                #     alt_preds = [apsf.result() for apsf in alt_preds]
+                # result
+                if options.targets_file is not None:
+                    # get result, only if not already gotten
+                    if isinstance(ref_preds[0], concurrent.futures.Future):
+                        ref_preds = [rpsf.result() for rpsf in ref_preds]
+                    alt_preds = [apsf.result() for apsf in alt_preds]
 
                 # stitch indel compensation shifts
                 if indel_size != 0 and options.indel_stitch:
@@ -272,6 +435,7 @@ def score_snps(params_file, model_file, vcf_file, worker_index, options):
     scores_out.close()
 
 
+
 def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
     """
     Score SNPs in a VCF file with a SeqNN model.
@@ -293,12 +457,10 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
     params_model = params["model"]
     params_train = params["train"]
     
-    print("* Before params_model: ", params_model)
     if params_train["task"] == "fine-tune":
         num_species = 165
         params_model["num_features"] = num_species + 5
         params_train['r64_idx'] = 109
-    print("* After params_model: ", params_model)
 
     # read targets
     if options.targets_file is None:
@@ -348,24 +510,6 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
     targets_length = seqnn_model.target_lengths[0]
     model_stride = seqnn_model.model_strides[0]
     model_crop = seqnn_model.target_crops[0] * model_stride
-
-    print("* targets_strand_df: ", targets_strand_df)
-    print("* targets_strand_df: ", len(targets_strand_df))
-    print("* targets_length: ", targets_length)
-    print("* model_stride: ", model_stride)
-    print("* model_crop: ", model_crop)
-    print("* num_shifts: ", num_shifts)
-    print("* input_shape: ", input_shape)
-    print("* seqnn_model: ", seqnn_model)
-    print("* seqnn_model.model: ", seqnn_model.model)
-    print("* seqnn_model.model.input_shape: ", seqnn_model.model.input_shape)
-    print("* seqnn_model.model_strides: ", seqnn_model.model_strides)
-    print("* seqnn_model.target_crops: ", seqnn_model.target_crops)
-    print("* seqnn_model.target_lengths: ", seqnn_model.target_lengths)
-    print("* seqnn_model.target_lengths[0]: ", seqnn_model.target_lengths[0])
-    print("* plus_mask: ", plus_mask)
-    print("* minus_mask: ", minus_mask)
-
     
     #################################################################
     # load SNPs
@@ -390,8 +534,6 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
         start_i=start_i,
         end_i=end_i,
     )
-    print("* snps: ", len(snps))
-    print("* snps[0]: ", snps[0])
 
     # read genes
     transcriptome = Transcriptome(options.genes_gtf)
@@ -400,7 +542,6 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
     genesnp_clusters = cluster_genes(
         transcriptome, params_model["seq_length"], options.cluster_pct
     )
-    print("* 1. genesnp_clusters: ", len(genesnp_clusters))
 
     # delimit sequence boundaries
     [gsc.delimit(params_model["seq_length"], model_crop) for gsc in genesnp_clusters]
@@ -413,9 +554,6 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
 
     # open genome FASTA
     genome_open = pysam.Fastafile(options.genome_fasta)
-
-    print("* genome_open: ", genome_open) 
-    print("* 2. genesnp_clusters: ", len(genesnp_clusters))
 
     #################################################################
     # predict SNP scores, write output
@@ -434,39 +572,47 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
     # CPU computation
     def score_write(ref_preds, alt_preds, gene_id, snp_id):
         scores = compute_scores(ref_preds, alt_preds, options.snp_stats)
+
+        # --- New: aggregate across ALL tracks, then compute logSED exactly as in script #1 ---
+        num_shifts = ref_preds.shape[0]
+        # 1) sum over shifts & bins, per target
+        ref_per_target = ref_preds.sum(axis=(0,1)) / num_shifts
+        alt_per_target = alt_preds.sum(axis=(0,1)) / num_shifts
+        # 2) now sum across targets
+        sum_ref_all = ref_per_target.sum()
+        sum_alt_all = alt_per_target.sum()
+        # 3) compute the “collapsed‐tracks” logSED
+        logSED_agg = np.log2(sum_alt_all + 1) - np.log2(sum_ref_all + 1)
+        # stash it in the same scores dict
+        scores["logSED_agg"] = logSED_agg.astype("float16")  
+
         for snp_stat in options.snp_stats:
             stat_out = scores_out.require_group(snp_stat)
             snp_out = stat_out.require_group(snp_id)
             snp_out.create_dataset(gene_id, data=scores[snp_stat], dtype="float16")
 
-    # if options.untransform_old:
-    #     untransform = dataset.untransform_preds1
-    # else:
-    #     untransform = dataset.untransform_preds
+        # --- New: store the aggregate scalar under its own group ---
+        agg_out = scores_out.require_group("logSED_agg")
+        agg_snp = agg_out.require_group(snp_id)
+        agg_snp.create_dataset(gene_id, data=scores["logSED_agg"], dtype="float16")
+
+    if options.untransform_old:
+        untransform = dataset.untransform_preds1
+    else:
+        untransform = dataset.untransform_preds
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for gsc in tqdm(genesnp_clusters):
-            print("** (in score_gene_snps) gsc: ", gsc.genes)
             snp_1hot_list = gsc.get_1hots(genome_open, num_species=num_species, species_index=params_train['r64_idx'])
             if snp_1hot_list is None:
                 continue
-            print("* (in score_gene_snps) snp_1hot_list: ", snp_1hot_list[0].shape)
             ref_1hot = np.expand_dims(snp_1hot_list[0], axis=0)
-            print("* (in score_gene_snps) ref_1hot: ", ref_1hot.shape)
             # predict reference
             ref_preds = []
             for shift in options.shifts:
-                print("*  (in score_gene_snps) shift: ", shift)
                 ref_1hot_shift = dna.hot1_augment(ref_1hot, shift=shift)
-                ref_preds_shift = seqnn_model(ref_1hot_shift)[0]
-                print("*  (in score_gene_snps) ref_preds_shift.shape: ", ref_preds_shift.shape)   
+                ref_preds_shift = seqnn_model(ref_1hot_shift)[0] 
                 ref_preds.append(ref_preds_shift)
-                # # untransform predictions
-                # if options.targets_file is None:
-                #     ref_preds.append(ref_preds_shift)
-                # else:
-                #     rpsf = executor.submit(untransform, ref_preds_shift, targets_df)
-                #     ref_preds.append(rpsf)
 
             for ai, alt_1hot in enumerate(snp_1hot_list[1:]):
                 alt_1hot = np.expand_dims(alt_1hot, axis=0)
@@ -479,8 +625,6 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
                     # repeat reference predictions, unless stitching
                     if not options.indel_stitch:
                         ref_preds = np.repeat(ref_preds, 2, axis=0)
-                        print("* ref_preds: ", ref_preds)
-                        print("* ref_preds.shape: ", ref_preds.shape)
 
                     # add compensation shifts
                     alt_shifts = []
@@ -493,22 +637,19 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
                 for shift in alt_shifts:
                     alt_1hot_shift = dna.hot1_augment(alt_1hot, shift=shift)
                     alt_preds_shift = seqnn_model(alt_1hot_shift)[0]
+                    # untransform predictions
+                    if options.targets_file is None:
+                        alt_preds.append(alt_preds_shift)
+                    else:
+                        apsf = executor.submit(untransform, alt_preds_shift, targets_df)
+                        alt_preds.append(apsf)
 
-                    alt_preds.append(alt_preds_shift)
-                    
-                    # # untransform predictions
-                    # if options.targets_file is None:
-                    #     alt_preds.append(alt_preds_shift)
-                    # else:
-                    #     apsf = executor.submit(untransform, alt_preds_shift, targets_df)
-                    #     alt_preds.append(apsf)
-
-                # # result
-                # if options.targets_file is not None:
-                #     # get result, only if not already gotten
-                #     if isinstance(ref_preds[0], concurrent.futures.Future):
-                #         ref_preds = [rpsf.result() for rpsf in ref_preds]
-                #     alt_preds = [apsf.result() for apsf in alt_preds]
+                # result
+                if options.targets_file is not None:
+                    # get result, only if not already gotten
+                    if isinstance(ref_preds[0], concurrent.futures.Future):
+                        ref_preds = [rpsf.result() for rpsf in ref_preds]
+                    alt_preds = [apsf.result() for apsf in alt_preds]
 
                 # flip reference and alternate
                 if gsc.snps[ai].flipped:
@@ -519,10 +660,17 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
                     ap_snp = np.array(alt_preds)
 
                 for gene in gsc.genes:
+                    ### ADDED/CHANGED CODE BELOW
+                    # Simple bounding check for entire gene start/end
+                    gene_start, gene_end = gene.span()
+                    if not (gene_start >= gsc.start and gene_end <= gsc.end):
+                        continue
+                    ### END OF ADDED/CHANGED CODE
                     # slice gene positions
                     gene_slice = gene.output_slice(
                         gsc.pstart, gsc.pend - gsc.pstart, model_stride
                     )
+
                     if len(gene_slice) == 0:
                         print(
                             f"WARNING: {gene.kv['gene_id']} exons fall outside prediction boundaries."
@@ -550,21 +698,7 @@ def score_gene_snps(params_file, model_file, vcf_file, worker_index, options):
     # close open files
     genome_open.close()
     scores_out.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    
 from collections import defaultdict
 
 def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, options):
@@ -588,12 +722,10 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
     params_model = params["model"]
     params_train = params["train"]
     
-    print("* Before params_model: ", params_model)
     if params_train["task"] == "fine-tune":
         num_species = 165
         params_model["num_features"] = num_species + 5
         params_train['r64_idx'] = 109
-    print("* After params_model: ", params_model)
 
     # read targets
     if options.targets_file is None:
@@ -643,28 +775,9 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
     targets_length = seqnn_model.target_lengths[0]
     model_stride = seqnn_model.model_strides[0]
     model_crop = seqnn_model.target_crops[0] * model_stride
-
-    print("* targets_strand_df: ", targets_strand_df)
-    print("* targets_strand_df: ", len(targets_strand_df))
-    print("* targets_length: ", targets_length)
-    print("* model_stride: ", model_stride)
-    print("* model_crop: ", model_crop)
-    print("* num_shifts: ", num_shifts)
-    print("* input_shape: ", input_shape)
-    print("* seqnn_model: ", seqnn_model)
-    print("* seqnn_model.model: ", seqnn_model.model)
-    print("* seqnn_model.model.input_shape: ", seqnn_model.model.input_shape)
-    print("* seqnn_model.model_strides: ", seqnn_model.model_strides)
-    print("* seqnn_model.target_crops: ", seqnn_model.target_crops)
-    print("* seqnn_model.target_lengths: ", seqnn_model.target_lengths)
-    print("* seqnn_model.target_lengths[0]: ", seqnn_model.target_lengths[0])
-    print("* plus_mask: ", plus_mask)
-    print("* minus_mask: ", minus_mask)
-
     
     #################################################################
     # load SNPs
-
     # filter for worker SNPs
     if options.processes is None:
         start_i = None
@@ -685,11 +798,6 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
         start_i=start_i,
         end_i=end_i,
     )
-    print("* snps: ", len(snps))
-    print("* snps[0]: ", snps[0])
-
-    # for snp in snps:
-    #     print(snp, snp.gene)
 
     # read genes
     transcriptome = Transcriptome(options.genes_gtf)
@@ -699,12 +807,10 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
         # Each 'snp' here presumably has an info_dict or info attribute
         # that might look like: {"GENE": "YAL049C"} or so.
         # Make sure you know how your variant parser stores the INFO field.
-
         gene_id = None
         
         if snp.gene is not None:
             snps_by_gene[snp.gene].append(snp)
-    # print("* snps_by_gene: ", snps_by_gene)
 
     # open genome FASTA
     genome_open = pysam.Fastafile(options.genome_fasta)
@@ -716,7 +822,6 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
             continue
         # We just grab the first key if there are multiple
         gene_obj = transcriptome.genes[gene_keys[0]]
-        print(f"* Single-gene cluster for {gene_keys} => Gene object: {gene_obj}")
 
         # Build a new cluster
         gsc = GeneSNPCluster()
@@ -725,27 +830,23 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
         # (You likely have model_crop from earlier in your code.)
         gsc.delimit(params_model["seq_length"], model_crop)
 
+        # If delimit came back invalid, skip
         if gsc.start < 0 or gsc.end < 0:
             continue
+        
         for snp in snps:
             if snp.pos >= gsc.start and snp.pos < gsc.end:
                 gsc.snps.append(snp)
         # Add to our final list
         genesnp_clusters.append(gsc)
 
-    # # delimit sequence boundaries
-    # [gsc.delimit(params_model["seq_length"], model_crop) for gsc in genesnp_clusters]
-
-    print("* genome_open: ", genome_open) 
-    print("* 2. genesnp_clusters: ", len(genesnp_clusters))
-
     #################################################################
-    # predict SNP scores, write output
-
-    # setup output
+    # predict SNP scores, write output    
+    # ensure our collapsed‐tracks stat is in the HDF5 group list
+    all_stats = options.snp_stats + ["logSED_agg"]
     scores_out = initialize_output_h5(
         options.out_dir,
-        options.snp_stats,
+        all_stats,
         snps,
         targets_length,
         targets_strand_df,
@@ -753,42 +854,61 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
         genesnp_clusters,
     )
 
-    # CPU computation
     def score_write(ref_preds, alt_preds, gene_id, snp_id):
-        scores = compute_scores(ref_preds, alt_preds, options.snp_stats)
+        # make sure we have a pure NumPy array
+        ref_arr = np.asarray(ref_preds, dtype=np.float32)
+        alt_arr = np.asarray(alt_preds, dtype=np.float32)
+
+        # 1) all the per‐track stats
+        scores = compute_scores(ref_arr, alt_arr, options.snp_stats)
+
+        # 2) now the “collapsed‐tracks” logSED
+        #    sum over shifts & bins → per‐target sums
+        ref_per_target = ref_arr.sum(axis=(0,1)) / ref_arr.shape[0]
+        alt_per_target = alt_arr.sum(axis=(0,1)) / alt_arr.shape[0]
+        #    sum across targets → single scalar
+        total_ref = float(ref_per_target.sum())
+        total_alt = float(alt_per_target.sum())
+        logSED_agg = np.float32(np.log2(total_alt + 1.) - np.log2(total_ref + 1.))
+
+        # stash it just like the others
+        scores["logSED_agg"] = logSED_agg
+
+        # 3) write everything out
         for snp_stat in options.snp_stats:
             stat_out = scores_out.require_group(snp_stat)
-            snp_out = stat_out.require_group(snp_id)
+            snp_out  = stat_out.require_group(snp_id)
             snp_out.create_dataset(gene_id, data=scores[snp_stat], dtype="float16")
 
-    # if options.untransform_old:
-    #     untransform = dataset.untransform_preds1
-    # else:
-    #     untransform = dataset.untransform_preds
+        # the "logSED_agg" group was created above via all_stats
+        stat_out = scores_out["logSED_agg"]
+        snp_grp  = stat_out.require_group(snp_id)
+        snp_grp.create_dataset(gene_id,
+                               data=scores["logSED_agg"],
+                               dtype="float32")
+
+    if options.untransform_old:
+        untransform = dataset.untransform_preds1
+    else:
+        untransform = dataset.untransform_preds
 
     with concurrent.futures.ThreadPoolExecutor() as executor:
         for gsc in tqdm(genesnp_clusters):
-            print("** (in score_gene_snps) gsc: ", gsc.genes)
             snp_1hot_list = gsc.get_1hots(genome_open, num_species=num_species, species_index=params_train['r64_idx'])
             if snp_1hot_list is None:
                 continue
-            print("* (in score_gene_snps) snp_1hot_list: ", snp_1hot_list[0].shape)
             ref_1hot = np.expand_dims(snp_1hot_list[0], axis=0)
-            print("* (in score_gene_snps) ref_1hot: ", ref_1hot.shape)
             # predict reference
             ref_preds = []
             for shift in options.shifts:
-                print("*  (in score_gene_snps) shift: ", shift)
                 ref_1hot_shift = dna.hot1_augment(ref_1hot, shift=shift)
                 ref_preds_shift = seqnn_model(ref_1hot_shift)[0]
-                print("*  (in score_gene_snps) ref_preds_shift.shape: ", ref_preds_shift.shape)   
-                ref_preds.append(ref_preds_shift)
-                # # untransform predictions
-                # if options.targets_file is None:
-                #     ref_preds.append(ref_preds_shift)
-                # else:
-                #     rpsf = executor.submit(untransform, ref_preds_shift, targets_df)
-                #     ref_preds.append(rpsf)
+                # untransform predictions
+                if options.targets_file is None:
+                    ref_preds.append(ref_preds_shift)
+                else:
+                    rpsf = executor.submit(untransform, ref_preds_shift, targets_df)
+                    ref_preds.append(rpsf)
 
             for ai, alt_1hot in enumerate(snp_1hot_list[1:]):
                 alt_1hot = np.expand_dims(alt_1hot, axis=0)
@@ -801,9 +921,6 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
                     # repeat reference predictions, unless stitching
                     if not options.indel_stitch:
                         ref_preds = np.repeat(ref_preds, 2, axis=0)
-                        print("* ref_preds: ", ref_preds)
-                        print("* ref_preds.shape: ", ref_preds.shape)
-
                     # add compensation shifts
                     alt_shifts = []
                     for shift in options.shifts:
@@ -815,22 +932,20 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
                 for shift in alt_shifts:
                     alt_1hot_shift = dna.hot1_augment(alt_1hot, shift=shift)
                     alt_preds_shift = seqnn_model(alt_1hot_shift)[0]
+                    # untransform predictions
+                    if options.targets_file is None:
+                        alt_preds.append(alt_preds_shift)
+                    else:
+                        apsf = executor.submit(untransform, alt_preds_shift, targets_df)
+                        alt_preds.append(apsf)
 
-                    alt_preds.append(alt_preds_shift)
-                    
-                    # # untransform predictions
-                    # if options.targets_file is None:
-                    #     alt_preds.append(alt_preds_shift)
-                    # else:
-                    #     apsf = executor.submit(untransform, alt_preds_shift, targets_df)
-                    #     alt_preds.append(apsf)
-
-                # # result
-                # if options.targets_file is not None:
-                #     # get result, only if not already gotten
-                #     if isinstance(ref_preds[0], concurrent.futures.Future):
-                #         ref_preds = [rpsf.result() for rpsf in ref_preds]
-                #     alt_preds = [apsf.result() for apsf in alt_preds]
+                # result
+                if options.targets_file is not None:
+                    # get result, only if not already gotten
+                    if isinstance(ref_preds[0], concurrent.futures.Future):
+                        ref_preds = [rpsf.result() for rpsf in ref_preds]
+                    if isinstance(alt_preds[0], concurrent.futures.Future):
+                        alt_preds = [apsf.result() for apsf in alt_preds]
 
                 # flip reference and alternate
                 if gsc.snps[ai].flipped:
@@ -841,6 +956,17 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
                     ap_snp = np.array(alt_preds)
 
                 for gene in gsc.genes:
+                    ### ADDED/CHANGED CODE BELOW
+                    # Simple bounding check for entire gene start/end
+                    gene_start, gene_end = gene.span()
+                    if not (gene_start >= gsc.start and gene_end <= gsc.end):
+                        print(
+                            f"Skipping gene {gene.kv['gene_id']} at runtime because it is not "
+                            f"fully contained in the window [{gsc.start}, {gsc.end}]. "
+                            f"Gene range = [{gene.start}, {gene.end}]."
+                        )
+                        continue
+                    ### END OF ADDED/CHANGED CODE
                     # slice gene positions
                     gene_slice = gene.output_slice(
                         gsc.pstart, gsc.pend - gsc.pstart, model_stride
@@ -872,18 +998,6 @@ def score_gene_snps_target(params_file, model_file, vcf_file, worker_index, opti
     # close open files
     genome_open.close()
     scores_out.close()
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def cluster_genes(transcriptome, seq_length: int, center_pct: float):
@@ -961,9 +1075,6 @@ def compute_scores(ref_preds, alt_preds, snp_stats, strand_transform=None):
         strand_transform (scipy.sparse): Strand transform matrix.
     """
     num_shifts, seq_length, num_targets = ref_preds.shape
-
-    print("* ref_preds.shape: ", ref_preds.shape)
-    print("* alt_preds.shape: ", alt_preds.shape)
 
     # log/sqrt
     ref_preds_log = np.log2(ref_preds + 1)
@@ -1348,21 +1459,9 @@ class SNPCluster:
         pos_min = np.min(positions)
         pos_max = np.max(positions)
         pos_mid = (pos_min + pos_max) // 2
-        print("* pos_mid: ", pos_mid)
-        print("* seq_len: ", seq_len)
-        print("* pos_min: ", pos_min)
-        print("* pos_max: ", pos_max)
-
         self.chr = self.snps[0].chr
         self.start = pos_mid - seq_len // 2
         self.end = self.start + seq_len
-
-        print("* self.chr: ", self.chr)
-        print("* self.start: ", self.start)
-        print("* self.end: ", self.end)
-
-        # for snp in self.snps:
-        #     snp.seq_pos = snp.pos - 1 - self.start
 
     def get_1hots(self, genome_open, num_species=None, species_index=None):
         """Get list of one hot coded sequences."""
@@ -1370,30 +1469,20 @@ class SNPCluster:
 
         # extract reference
         if self.start < 0:
-            print("* in self.start < 0: ", self.start)
             ref_seq = (
                 "N" * (-self.start) + genome_open.fetch(self.chr, 0, self.end).upper()
             )
         else:
-            print("* in self.start < 0 else: ", self.start)
             ref_seq = genome_open.fetch(self.chr, self.start, self.end).upper()
 
         # extend to full length
         if len(ref_seq) < self.end - self.start:
             ref_seq += "N" * (self.end - self.start - len(ref_seq))
-        print("* ref_seq: ", len(ref_seq))
         # verify reference alleles
-        print("* verify reference alleles: ")
         for snp in self.snps:
             ref_n = len(snp.ref_allele)
-            print("\t(get_1hots) snp.pos: ", snp.pos)
-            print("\t(get_1hots) self.start: ", self.start)
             snp_pos = snp.pos - 1 - self.start
             ref_snp = ref_seq[snp_pos : snp_pos + ref_n]
-            print("\t(get_1hots) snp: ", snp)
-            print("\t(get_1hots) ref_n: ", ref_n)
-            print("\t(get_1hots) snp_pos: ", snp_pos)
-            print("\t(get_1hots) ref_snp: ", ref_snp)
             if snp.ref_allele != ref_snp:
                 print(
                     "ERROR: %s does not match reference %s" % (snp, ref_snp),
@@ -1404,24 +1493,15 @@ class SNPCluster:
 
         # 1 hot code reference sequence
         ref_1hot = dna.dna_1hot_mask_species_encoding(ref_seq, num_species=num_species, species_index=species_index)
-        print("\t(get_1hots) * ref_1hot.shape: ", ref_1hot.shape)
         seqs1_list = [ref_1hot]
 
         # make alternative 1 hot coded sequences
         # (assuming SNP is 1-based indexed)
-        print("(get_1hots) * make alternative 1 hot coded sequences: ")
         for snp in self.snps:
-
-            print("\t(get_1hots) snp.pos: ", snp.pos)
-            print("\t(get_1hots) self.start: ", self.start)
             snp_pos = snp.pos - 1 - self.start
-            print("\t(get_1hots) snp: ", snp)
-            print("\t(get_1hots) snp_pos: ", snp_pos)
-            print("\t(get_1hots) snp.alt_alleles[0]: ", snp.alt_alleles[0])
             alt_1hot = make_alt_1hot(
                 ref_1hot, snp_pos, snp.ref_allele, snp.alt_alleles[0]
             )
-            print("\t(get_1hots) * alt_1hot.shape: ", alt_1hot.shape)
             seqs1_list.append(alt_1hot)
 
         return seqs1_list
@@ -1444,42 +1524,3 @@ class GeneSNPCluster(SNPCluster):
         self.end = self.start + seq_len
         self.pstart = self.start + crop
         self.pend = self.end - crop
-
-        print("* (in GeneSNPCluster.delimit) self.genes: ", self.genes)
-        print("* (in GeneSNPCluster.delimit) self.snps: ", self.snps)
-        print("* (in GeneSNPCluster.delimit) seq_len: ", seq_len)
-        print("* (in GeneSNPCluster.delimit) crop: ", crop)
-        print("* (in GeneSNPCluster.delimit) midp: ", midp)
-        print("* (in GeneSNPCluster.delimit) self.start: ", self.start)
-        print("* (in GeneSNPCluster.delimit) self.end: ", self.end)
-        print("* (in GeneSNPCluster.delimit) self.pstart: ", self.pstart)
-        print("* (in GeneSNPCluster.delimit) self.pend: ", self.pend)
-        
- 
-
-        # # 1) Find the min/max of the gene’s exonic coordinates
-        # gene_starts = [g.start for g in self.genes]
-        # gene_ends   = [g.end   for g in self.genes]
-        # gene_min = min(gene_starts)
-        # gene_max = max(gene_ends)
-
-        # # 2) Find the min/max of the SNP positions
-        # snp_positions = [s.pos for s in self.snps]
-        # snp_min = min(snp_positions)
-        # snp_max = max(snp_positions)
-
-        # # 3) Combine to get the bounding box we must cover
-        # region_min = min(gene_min, snp_min)
-        # region_max = max(gene_max, snp_max)
-
-        # # 4) Center the final window on the midpoint of that bounding box
-        # region_mid = (region_min + region_max) // 2
-
-        # self.chr = self.genes[0].chrom
-        # self.start = region_mid - seq_len // 2
-        # self.end = self.start + seq_len
-        
-        # self.pstart = self.start + crop
-        # self.pend = self.end - crop
-
-

@@ -126,6 +126,64 @@ def main():
         options.mut_up = options.mut_len // 2
         options.mut_down = options.mut_len - options.mut_up
 
+    # #################################################################
+    # # read parameters and targets
+
+    # # read model parameters
+    # with open(params_file) as params_open:
+    #     params = json.load(params_open)
+    # params_model = params["model"]
+
+    # # read targets
+    # if options.targets_file is None:
+    #     parser.error("Must provide targets file to clarify stranded datasets")
+    # targets_df = pd.read_csv(options.targets_file, sep="\t", index_col=0)
+
+    # # handle strand pairs
+    # if "strand_pair" in targets_df.columns:
+    #     # prep strand
+    #     targets_strand_df = dataset.targets_prep_strand(targets_df)
+
+    #     # set strand pairs (using new indexing)
+    #     orig_new_index = dict(zip(targets_df.index, np.arange(targets_df.shape[0])))
+    #     targets_strand_pair = np.array(
+    #         [orig_new_index[ti] for ti in targets_df.strand_pair]
+    #     )
+    #     params_model["strand_pair"] = [targets_strand_pair]
+
+    #     # construct strand sum transform
+    #     strand_transform = dataset.make_strand_transform(targets_df, targets_strand_df)
+    # else:
+    #     targets_strand_df = targets_df
+    #     strand_transform = None
+
+    # num_targets = targets_strand_df.shape[0]
+
+    # #################################################################
+    # # setup model
+
+    # seqnn_model = seqnn.SeqNN(params_model)
+    # seqnn_model.restore(model_file)
+    # seqnn_model.build_slice(targets_df.index)
+    # seqnn_model.build_ensemble(options.rc)
+
+    # #################################################################
+    # # SNP sequence dataset
+
+    # # load SNPs
+    # variants = vcf.vcf_snps(vcf_file)
+
+    # # get one hot coded input sequences
+    # seqs_1hot, seq_headers, variants, seqs_dna = vcf.snps_seq1(
+    #     variants, params_model["seq_length"], options.genome_fasta, return_seqs=True
+    # )
+    # num_seqs = seqs_1hot.shape[0]
+
+    # # determine mutation region limits
+    # seq_mid = params_model["seq_length"] // 2
+    # mut_start = seq_mid - options.mut_up
+    # mut_end = mut_start + options.mut_len
+
     #################################################################
     # read parameters and targets
 
@@ -133,6 +191,13 @@ def main():
     with open(params_file) as params_open:
         params = json.load(params_open)
     params_model = params["model"]
+    params_train = params["train"]
+    if params_train["task"] == "fine-tune":
+        num_species = 165
+        params_model["num_features"] = num_species + 5
+        params_train['r64_idx'] = 109
+    else:
+        params_model["num_features"] = 4
 
     # read targets
     if options.targets_file is None:
@@ -156,7 +221,6 @@ def main():
     else:
         targets_strand_df = targets_df
         strand_transform = None
-
     num_targets = targets_strand_df.shape[0]
 
     #################################################################
@@ -168,14 +232,30 @@ def main():
     seqnn_model.build_ensemble(options.rc)
 
     #################################################################
+    # # sequence dataset
+
+    # # read sequences from BED
+    # seqs_dna, seqs_coords = bed.make_bed_seqs(
+    #     bed_file, options.genome_fasta, params_model["seq_length"], stranded=True
+    # )
+    # num_seqs = len(seqs_dna)
+
+    # # determine mutation region limits
+    # seq_mid = params_model["seq_length"] // 2
+    # mut_start = seq_mid - options.mut_up
+    # mut_end = mut_start + options.mut_len
+
     # SNP sequence dataset
 
     # load SNPs
     variants = vcf.vcf_snps(vcf_file)
 
     # get one hot coded input sequences
-    seqs_1hot, seq_headers, variants, seqs_dna = vcf.snps_seq1(
-        variants, params_model["seq_length"], options.genome_fasta, return_seqs=True
+    seqs_1hot, seq_headers, variants, seqs_dna = vcf.snps_seq1_species_encoding(
+        variants, params_model["seq_length"], options.genome_fasta, 
+        num_species = num_species, 
+        species_index=params_train['r64_idx'],
+        return_seqs=True
     )
     num_seqs = seqs_1hot.shape[0]
 
@@ -192,10 +272,10 @@ def main():
         os.remove(scores_h5_file)
     scores_h5 = h5py.File(scores_h5_file, "w")
     scores_h5.create_dataset("label", data=np.array(seq_headers, dtype="S"))
-    scores_h5.create_dataset("seqs", dtype="bool", shape=(num_seqs, options.mut_len, 4))
+    scores_h5.create_dataset("seqs", dtype="bool", shape=(num_seqs, options.mut_len, params_model["num_features"]))
     for snp_stat in options.snp_stats:
         scores_h5.create_dataset(
-            snp_stat, dtype="float16", shape=(num_seqs, options.mut_len, 4, num_targets)
+            snp_stat, dtype="float16", shape=(num_seqs, options.mut_len, params_model["num_features"], num_targets)
         )
 
     #################################################################
@@ -206,10 +286,6 @@ def main():
 
         # 1-hot encode reference
         ref_1hot = np.expand_dims(seqs_1hot[si], axis=0)
-
-        print("mut_start: ", mut_start, "; mut_end: ", mut_end)
-        print("ref_1hot[0, mut_start:mut_end].astype('bool'): ", ref_1hot[0, mut_start:mut_end].astype("bool"))
-
         # save sequence
         scores_h5["seqs"][si] = ref_1hot[0, mut_start:mut_end].astype("bool")
 

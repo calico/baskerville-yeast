@@ -409,7 +409,6 @@ class SeqNN:
 
         # compile with dense metrics
         num_targets = model.output_shape[-1]
-
         if loss_fn is None:
             loss_fn = loss_label
 
@@ -450,10 +449,6 @@ class SeqNN:
                 batch_size = tf.shape(x)[0]  # Dynamically get the batch size
                 length = tf.shape(x)[1]      # Dynamically get the sequence length
                 new_shape = tf.stack([batch_size, length, num_species + 1])  # Fully defined shape tensor
-                print("* x: ", x)
-                print("* x.shape: ", x.shape)
-                print("* y.shape: ", y.shape)
-                print("* new_shape: ", new_shape)
 
                 # 1) Concatenate zeros
                 #    x is shape: (batch_size, length, 4)
@@ -484,8 +479,6 @@ class SeqNN:
 
                 # scatter update them into x_new
                 x_new = tf.tensor_scatter_nd_update(x_new, indices, updates)
-                print("x    : ", x.shape)
-                print("x_new: ", x_new.shape)
                 return x_new, y
             else:
                 # If not fine-tuning, return original (x,y).
@@ -501,6 +494,90 @@ class SeqNN:
 
         # evaluate
         return model.evaluate(dataset_transformed)
+
+
+    def evaluate_lm_fine_tuned_untransform(
+        self, seq_data, params_train=None, num_species=1, head_i=None, loss_label: str = "poisson", loss_fn=None
+    ):
+        """Evaluate model on SeqDataset."""
+        # choose model
+        if self.ensemble is not None:
+            model = self.ensemble
+        elif head_i is not None:
+            model = self.models[head_i]
+        else:
+            model = self.model
+
+        # compile with dense metrics
+        num_targets = model.output_shape[-1]
+
+        # -----------------------------------------------------
+        # 3) Define transformation logic for fine-tuning
+        #    This will create the bigger input shape, set zeros,
+        #    and then set a column to ones at index `5 + r64_idx`.
+        # -----------------------------------------------------
+        def transform_input(x, y):
+            """
+            Modify x on-the-fly only if we're in fine-tune mode.
+            Otherwise, return (x,y) as is.
+            """
+            if params_train and params_train.get("task") == "fine-tune":
+                # Suppose x has shape: (batch_size, length, 4)
+                # We want to expand it to (batch_size, length, num_species+1).
+                # First, define the new shape = everything except the last dim + (num_species+1)
+                # new_shape = x.shape[:-1] + (num_species + 1,)
+                batch_size = tf.shape(x)[0]  # Dynamically get the batch size
+                length = tf.shape(x)[1]      # Dynamically get the sequence length
+                new_shape = tf.stack([batch_size, length, num_species + 1])  # Fully defined shape tensor
+                
+                # 1) Concatenate zeros
+                #    x is shape: (batch_size, length, 4)
+                #    tf.zeros(new_shape) is shape: (batch_size, length, num_species+1)
+                #    So after concat along axis=-1, new shape = (batch_size, length, 4 + num_species+1)
+                x_new = tf.concat([x, tf.zeros(new_shape, dtype=x.dtype)], axis=-1)
+
+                # 2) Now set a particular column (5 + r64_idx) to ones.
+                #    We'll gather all valid [batch_i, position_j] pairs so we can scatter an update of 1’s.
+                #    Indices shape: (batch_size * length, 2) for (i, j), but we need 3D indices [i, j, channel].
+                r64_offset = 5 + params_train["r64_idx"]
+                batch_size = tf.shape(x)[0]
+                length = tf.shape(x)[1]
+
+                # We'll build a list of [i, j, r64_offset] for i in [0..batch_size-1], j in [0..length-1].
+                # Careful: tf.range returns a 1D tensor. We'll do a meshgrid or a nested loop comprehension.
+                # But to do this entirely in a graph-friendly way, we can do something like:
+                ii, jj = tf.meshgrid(tf.range(batch_size), tf.range(length), indexing="ij")
+                # Flatten them
+                ii_flat = tf.reshape(ii, [-1])
+                jj_flat = tf.reshape(jj, [-1])
+                # Stack them with r64_offset
+                r64_index_column = tf.fill(tf.shape(ii_flat), r64_offset)
+                indices = tf.stack([ii_flat, jj_flat, r64_index_column], axis=1)
+
+                # updates is a 1D tensor of ones, length = batch_size*length
+                updates = tf.ones(tf.shape(ii_flat), dtype=x_new.dtype)
+
+                # scatter update them into x_new
+                x_new = tf.tensor_scatter_nd_update(x_new, indices, updates)
+                return x_new, y
+            else:
+                # If not fine-tuning, return original (x,y).
+                return x, y
+
+        # -----------------------------------------------------
+        # 4) Apply transform_input to the entire dataset
+        #    so that each (x,y) is shaped properly.
+        # -----------------------------------------------------
+        # seq_data.dataset is typically a tf.data.Dataset
+        # We'll map the transform function onto each element
+        dataset_transformed = seq_data.dataset.map(transform_input)
+
+        # 1) Predict in sqrt-space
+        preds_sqrt = model.predict(dataset)
+
+        # evaluate
+        return model.evaluate(dataset_transformed)
+
 
     def get_bn_layer(self, bn_layer_i=0):
         """Return specified batch normalization layer."""

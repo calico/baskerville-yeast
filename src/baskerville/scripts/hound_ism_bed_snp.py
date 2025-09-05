@@ -28,12 +28,15 @@ from baskerville import dna
 from baskerville import seqnn
 from baskerville import snps
 
+# Map nucleotides to indices
+NUC_TO_INDEX = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+
 """
 hound_ism_bed.py
 
-Perform an in silico saturation mutagenesis of sequences in a BED file.
+Perform an in silico saturation mutagenesis of sequences in a BED file,
+optionally using a SNP TSV file to mutate only specified alternate alleles.
 """
-
 
 def main():
     usage = "usage: %prog [options] <params_file> <model_file> <bed_file>"
@@ -111,10 +114,16 @@ def main():
         action="store_true",
         help="Untransform old models [Default: %default]",
     )
+    parser.add_option(
+        "-s",
+        dest="snps_file",
+        default=None,
+        type="str",
+        help="TSV file specifying SNPs with Reference and Alternate alleles",
+    )
     (options, args) = parser.parse_args()
 
     if len(args) == 3:
-        # single worker
         params_file = args[0]
         model_file = args[1]
         bed_file = args[2]
@@ -133,9 +142,6 @@ def main():
         assert options.mut_len > 0
         options.mut_up = options.mut_len // 2
         options.mut_down = options.mut_len - options.mut_up
-
-    #################################################################
-    # read parameters and targets
 
     # read model parameters
     with open(params_file) as params_open:
@@ -156,33 +162,23 @@ def main():
 
     # handle strand pairs
     if "strand_pair" in targets_df.columns:
-        # prep strand
         targets_strand_df = dataset.targets_prep_strand(targets_df)
-
-        # set strand pairs (using new indexing)
         orig_new_index = dict(zip(targets_df.index, np.arange(targets_df.shape[0])))
-        targets_strand_pair = np.array(
-            [orig_new_index[ti] for ti in targets_df.strand_pair]
-        )
+        targets_strand_pair = np.array([
+            orig_new_index[ti] for ti in targets_df.strand_pair
+        ])
         params_model["strand_pair"] = [targets_strand_pair]
-
-        # construct strand sum transform
         strand_transform = dataset.make_strand_transform(targets_df, targets_strand_df)
     else:
         targets_strand_df = targets_df
         strand_transform = None
     num_targets = targets_strand_df.shape[0]
 
-    #################################################################
     # setup model
-
     seqnn_model = seqnn.SeqNN(params_model)
     seqnn_model.restore(model_file)
     seqnn_model.build_slice(targets_df.index)
     seqnn_model.build_ensemble(options.rc)
-
-    #################################################################
-    # sequence dataset
 
     # read sequences from BED
     seqs_dna, seqs_coords = bed.make_bed_seqs(
@@ -190,29 +186,42 @@ def main():
     )
     num_seqs = len(seqs_dna)
 
+    # if SNP TSV provided, load and validate
+    if options.snps_file:
+        snps_df = pd.read_csv(options.snps_file, sep="\t")
+        if snps_df.empty:
+            parser.error("SNPs file is empty or not found")
+        # load bed names to match SNP IDs
+        bed_df = pd.read_csv(bed_file, sep="\t", header=None)
+        if len(bed_df) != num_seqs:
+            parser.error(
+                f"Number of BED entries ({len(bed_df)}) does not match number of sequences ({num_seqs})"
+            )
+
     # determine mutation region limits
     seq_mid = params_model["seq_length"] // 2
     mut_start = seq_mid - options.mut_up
     mut_end = mut_start + options.mut_len
 
-    #################################################################
-    # setup output
-
-    scores_h5_file = "%s/scores.h5" % options.out_dir
+    # setup output HDF5
+    scores_h5_file = f"{options.out_dir}/scores.h5"
     if os.path.isfile(scores_h5_file):
         os.remove(scores_h5_file)
     scores_h5 = h5py.File(scores_h5_file, "w")
-    scores_h5.create_dataset("seqs", dtype="bool", shape=(num_seqs, options.mut_len, params_model["num_features"]))
+    scores_h5.create_dataset(
+        "seqs",
+        dtype="bool",
+        shape=(num_seqs, options.mut_len, params_model["num_features"]),
+    )
     for snp_stat in options.snp_stats:
         scores_h5.create_dataset(
-            snp_stat, dtype="float16", shape=(num_seqs, options.mut_len, 4, num_targets)
+            snp_stat,
+            dtype="float16",
+            shape=(num_seqs, options.mut_len, 4, num_targets),
         )
 
-    # store mutagenesis sequence coordinates
-    scores_chr = []
-    scores_start = []
-    scores_end = []
-    scores_strand = []
+    # store coordinates
+    scores_chr, scores_start, scores_end, scores_strand = [], [], [], []
     for seq_chr, seq_start, seq_end, seq_strand in seqs_coords:
         scores_chr.append(seq_chr)
         scores_strand.append(seq_strand)
@@ -230,75 +239,145 @@ def main():
     scores_h5.create_dataset("end", data=np.array(scores_end))
     scores_h5.create_dataset("strand", data=np.array(scores_strand, dtype="S"))
 
-    #################################################################
-    # predict scores, write output
-
+    # iterate sequences
     for si, seq_dna in enumerate(seqs_dna):
-        print("Predicting %d" % si, flush=True)
+        print(f"Predicting sequence {si}", flush=True)
+        seq_chr, seq_start, seq_end, seq_strand = seqs_coords[si]
+        print(
+            f"Sequence {si} ({seq_chr}:{seq_start}-{seq_end}) strand {seq_strand}"
+        )
 
-        # 1 hot code DNA
+        # one-hot encode reference
         if params_train["task"] == "fine-tune":
-            ref_1hot = dna.dna_1hot_mask_species_encoding(seq_dna, num_species=num_species, species_index=params_train['r64_idx'])
+            ref_1hot = dna.dna_1hot_mask_species_encoding(
+                seq_dna,
+                num_species=num_species,
+                species_index=params_train['r64_idx'],
+            )
         else:
             ref_1hot = dna.dna_1hot(seq_dna)
         ref_1hot = np.expand_dims(ref_1hot, axis=0)
 
-        # save sequence
+        # save sequence mask
         scores_h5["seqs"][si] = ref_1hot[0, mut_start:mut_end].astype("bool")
 
         # predict reference
         ref_preds = []
         for shift in options.shifts:
-            # shift sequence and predict
             ref_1hot_shift = dna.hot1_augment(ref_1hot, shift=shift)
-            ref_preds_shift = seqnn_model.predict_transform(
-                ref_1hot_shift,
-                targets_df,
-                strand_transform,
-                options.untransform_old,
+            ref_preds.append(
+                seqnn_model.predict_transform(
+                    ref_1hot_shift,
+                    targets_df,
+                    strand_transform,
+                    options.untransform_old,
+                )
             )
-            ref_preds.append(ref_preds_shift)
         ref_preds = np.array(ref_preds)
 
-        # for mutation positions
-        for mi in range(mut_start, mut_end):
-            # for each nucleotide
-            for ni in range(4):
-                # if non-reference
-                if ref_1hot[0, mi, ni] == 0:
-                    # copy and modify
-                    alt_1hot = np.copy(ref_1hot)
-                    alt_1hot[0, mi, :] = 0
-                    alt_1hot[0, mi, ni] = 1
+        # perform SNP-specific or saturating mutagenesis
+        if options.snps_file:
+            snp_id = bed_df.iloc[si, 3]
+            var_rows = snps_df[snps_df['SNP'] == snp_id]
+            print("var_rows: ", var_rows)   
+            if var_rows.shape[0] != 1:
+                # raise ValueError(
+                #     f"SNP ID mismatch for sequence {si}: '{snp_id}' found {var_rows.shape[0]} entries in SNPs file"
+                # )
+                var_rows = var_rows.iloc[0:1]
+            var = var_rows.iloc[0]
+            variant_pos = int(var['ChrPos'])
+            ref_allele = var['Reference'].upper()
+            alt_allele = var['Alternate'].upper()
 
-                    # predict alternate
-                    alt_preds = []
-                    for shift in options.shifts:
-                        # shift sequence and predict
-                        alt_1hot_shift = dna.hot1_augment(alt_1hot, shift=shift)
-                        alt_preds_shift = seqnn_model.predict_transform(
-                            alt_1hot_shift,
-                            targets_df,
-                            strand_transform,
-                            options.untransform_old,
-                        )
-                        alt_preds.append(alt_preds_shift)
-                    alt_preds = np.array(alt_preds)
+            print("seq_start: ", seq_start, "; seq_end: ", seq_end)
+            print("variant_pos: ", variant_pos)
+            print("ref_allele: ", ref_allele, "; alt_allele: ", alt_allele)
+            # determine local index of variant
+            if seq_strand == "+":
+                local_idx = variant_pos - seq_start - 1
+            else:
+                local_idx = seq_end - variant_pos - 1 + 1
+            print("local_idx: ", local_idx)
+            # validate reference base
+            print("length of seq_dna: ", len(seq_dna))
+            # seq_base = seq_dna[local_idx-3:local_idx+3]
+            seq_base = seq_dna[local_idx]
+            print("ref_allele: ", ref_allele, "; alt_allele: ", alt_allele)
+            print(
+                f"Reference base at seq {si} ({seq_chr}:{variant_pos}) is {seq_base}"
+            )
+            if seq_base.upper() != ref_allele:
+                continue
+                # raise ValueError(
+                #     f"Reference allele mismatch at seq {si} ({seq_chr}:{variant_pos}): "
+                #     f"expected {ref_allele}, found {seq_base}"
+                # )
 
-                    ism_scores = snps.compute_scores(
-                        ref_preds, alt_preds, options.snp_stats, None
+            # map alleles to indices
+            ref_index = NUC_TO_INDEX[ref_allele]
+            alt_index = NUC_TO_INDEX[alt_allele]
+
+            # build alternate one-hot
+            alt_1hot = np.copy(ref_1hot)
+            alt_1hot[0, local_idx, :] = 0
+            alt_1hot[0, local_idx, alt_index] = 1
+
+            # predict alternate
+            alt_preds = []
+            for shift in options.shifts:
+                alt_1hot_shift = dna.hot1_augment(alt_1hot, shift=shift)
+                alt_preds.append(
+                    seqnn_model.predict_transform(
+                        alt_1hot_shift,
+                        targets_df,
+                        strand_transform,
+                        options.untransform_old,
                     )
-                    for snp_stat in options.snp_stats:
-                        scores_h5[snp_stat][si, mi - mut_start, ni] = ism_scores[
-                            snp_stat
-                        ]
+                )
+            alt_preds = np.array(alt_preds)
 
-    # close output HDF5
+            # compute and save SNP effect
+            ism_scores = snps.compute_scores(
+                ref_preds, alt_preds, options.snp_stats, None
+            )
+            var_ri = local_idx - mut_start
+            for snp_stat in options.snp_stats:
+                scores_h5[snp_stat][si, var_ri, alt_index] = ism_scores[snp_stat]
+                print("ism_scores[snp_stat]: ", ism_scores[snp_stat])
+        else:
+            # original saturation mutagenesis
+            for mi in range(mut_start, mut_end):
+                for ni in range(4):
+                    if ref_1hot[0, mi, ni] == 0:
+                        alt_1hot = np.copy(ref_1hot)
+                        alt_1hot[0, mi, :] = 0
+                        alt_1hot[0, mi, ni] = 1
+
+                        alt_preds = []
+                        for shift in options.shifts:
+                            alt_1hot_shift = dna.hot1_augment(alt_1hot, shift=shift)
+                            alt_preds.append(
+                                seqnn_model.predict_transform(
+                                    alt_1hot_shift,
+                                    targets_df,
+                                    strand_transform,
+                                    options.untransform_old,
+                                )
+                            )
+                        alt_preds = np.array(alt_preds)
+
+                        ism_scores = snps.compute_scores(
+                            ref_preds, alt_preds, options.snp_stats, None
+                        )
+                        for snp_stat in options.snp_stats:
+                            scores_h5[snp_stat][
+                                si, mi - mut_start, ni
+                            ] = ism_scores[snp_stat]
+
+    # close HDF5
     scores_h5.close()
 
 
-################################################################################
-# __main__
-################################################################################
 if __name__ == "__main__":
     main()

@@ -21,8 +21,11 @@ import h5py
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
+from scipy.stats import pearsonr
 import tensorflow as tf
 from tqdm import tqdm
+
+from sklearn.metrics import explained_variance_score
 
 from baskerville import bed
 from baskerville import dataset
@@ -170,99 +173,22 @@ def main():
             eval_data, loss_label=loss_label, loss_fn=loss_fn
         )
 
-
     # print summary statistics
     print("\nTest Loss:         %7.5f" % test_loss)
+    print("PearsonR:         %7.5f", test_metric1.mean())
+    print("R2:         %7.5f", test_metric2.mean())
 
-    if loss_label == "bce":
-        print("Test AUROC:        %7.5f" % test_metric1.mean())
-        print("Test AUPRC:        %7.5f" % test_metric2.mean())
-
-        # write target-level statistics
-        targets_acc_df = pd.DataFrame(
-            {
-                "index": targets_df.index,
-                "auroc": test_metric1,
-                "auprc": test_metric2,
-                "identifier": targets_df.identifier,
-                "description": targets_df.description,
-            }
-        )
-
-    else:
-        print("Test PearsonR:     %7.5f" % test_metric1.mean())
-        print("Test R2:           %7.5f" % test_metric2.mean())
-
-        # write target-level statistics
-        targets_acc_df = pd.DataFrame(
-            {
-                "index": targets_df.index,
-                "pearsonr": test_metric1,
-                "r2": test_metric2,
-                "identifier": targets_df.identifier,
-                "description": targets_df.description,
-            }
-        )
-
-    targets_acc_df.to_csv(
-        "%s/acc.txt" % args.out_dir, sep="\t", index=False, float_format="%.5f"
-    )
-
-    #######################################################
-    # if we want to save/spearman, predict again
-
-    if args.save or args.rank:
-        # compute predictions
-        test_preds = seqnn_model.predict(
-            eval_data, stream=True, step=args.step, dtype="float16"
-        )
-
-        # read targets
-        test_targets = eval_data.numpy(return_inputs=False, step=args.step)
-
-        if args.rank:
-            # compute target spearmanr
-            test_spearmanr = []
-            for ti in tqdm(range(test_preds.shape[-1])):
-                test_preds_flat = test_preds[..., ti].flatten()
-                test_targets_flat = test_targets[..., ti].flatten()
-                spear_ti = spearmanr(test_targets_flat, test_preds_flat)[0]
-                test_spearmanr.append(spear_ti)
-
-            # write target-level statistics
-            targets_acc_df = pd.DataFrame(
-                {
-                    "index": targets_df.index,
-                    "pearsonr": test_metric1,
-                    "spearmanr": test_spearmanr,
-                    "r2": test_metric2,
-                    "identifier": targets_df.identifier,
-                    "description": targets_df.description,
-                }
-            )
-
-            targets_acc_df.to_csv(
-                "%s/acc.txt" % args.out_dir, sep="\t", index=False, float_format="%.5f"
-            )
-
-    if args.save:
-        with h5py.File("%s/preds.h5" % args.out_dir, "w") as preds_h5:
-            preds_h5.create_dataset("preds", data=test_preds)
-        with h5py.File("%s/targets.h5" % args.out_dir, "w") as targets_h5:
-            targets_h5.create_dataset("targets", data=test_targets)
-
-        if args.bedgraph_indexes is not None:
-            bedgraph_indexes = [int(ti) for ti in args.bedgraph_indexes.split(",")]
-            bedg_out = "%s/bedgraph" % args.out_dir
-            bed.write_bedgraph(
-                test_preds,
-                test_targets,
-                args.data_dir,
-                bedg_out,
-                args.split,
-                bedgraph_indexes,
-            )
-
+    # Save or merge into a DataFrame
+    targets_acc_df = pd.DataFrame({
+        "index": targets_df.index,
+        "pearsonr": test_metric1,
+        "r2": test_metric2,
+        # "pearsonr_un": pearsonr_un,
+        # "r2_un": r2_un,
+        "identifier": targets_df.identifier,
+        "description": targets_df.description
+    })
+    targets_acc_df.to_csv("%s/acc.txt" % args.out_dir, sep="\t", index=False, float_format="%.5f")
 
 ################################################################################
 # __main__

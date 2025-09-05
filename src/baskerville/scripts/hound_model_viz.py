@@ -86,26 +86,20 @@ def main():
         params = json.load(params_open)
     params_model = params["model"]
     params_train = params["train"]
-    print("* Before params_model: ", params_model)
     if params_train["task"] == "fine-tune":
         num_species = 165
         params_model["num_features"] = num_species + 5
         params_train['r64_idx'] = 109
-    print("* After params_model: ", params_model)
-
 
     #################################################################
     # setup model
 
     seqnn_model = seqnn.SeqNN(params_model)
-    seqnn_model.restore(model_file)
+    # seqnn_model.restore(model_file)
     # seqnn_model.build_ensemble(options.rc)
 
-    plot_model(seqnn_model.model, to_file=f'{options.out_dir}/{options.exp_name}_model.png')
-            #show_dtype=True, 
-            #            show_layer_names=True, show_shapes=True,  
-            #            to_file=f'{options.out_dir}/{options.exp_name}_model.png')
-
+    plot_model(seqnn_model.model, show_dtype=True, show_layer_names=True, show_shapes=True,  
+               to_file=f'{options.out_dir}/{options.exp_name}_model.png')
 
 ################################################################################
 # __main__
